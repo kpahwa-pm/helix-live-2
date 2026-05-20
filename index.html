@@ -738,130 +738,233 @@ async function _process(buf, file){
   const raw=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
   if(!raw.length){alertUp('File appears empty.');return;}
 
-  // 2. Detect columns
-  const cols=Object.keys(raw[0]);
-  const cl=s=>s.toLowerCase().replace(/[\s_\-]/g,'');
-  const find=(...v)=>cols.find(c=>v.some(x=>cl(c).includes(x)))||null;
-  const tCol   = find('ticker','symbol','scrip','code','isin','cusip');
-  const nCol   = find('name','instrument','security','stock','company','description');
-  const qCol   = find('qty','quantity','units','shares','holding','position','amount','facevalue','face');
-  const mvCol  = find('marketvalue','mktvalue','value','mv','notional');
+  // 2. Detect columns — priority order matters, specific before ambiguous
+  const cols = Object.keys(raw[0]);
+  const cl   = s => s.toLowerCase().replace(/[\s_\-\/\(\)]/g, '');
+  const find = (...v) => cols.find(c => v.some(x => cl(c).includes(x))) || null;
+  const findPriority = (...groups) => { for(const g of groups){const r=find(...g);if(r)return r;} return null; };
+
+  // Ticker — explicit ticker first, never fall back to ISIN here (ISIN has its own column)
+  const tCol = findPriority(
+    ['tickers','ticker'],
+    ['symbol','scrip','bloombergticker'],
+    ['code']                           // generic 'code' only if nothing else
+  );
+  // ISIN — separate column, used for individual bonds that have no Yahoo ticker
+  const isinCol = findPriority(
+    ['isin'],
+    ['cusip','sedol']
+  );
+  // Name
+  const nCol = findPriority(
+    ['instrument','security','description'],
+    ['stock','company'],
+    ['name']                           // last — too generic
+  );
+  // Quantity
+  const qCol = findPriority(
+    ['quantity','quantities'],
+    ['qty','units','shares','holding'],
+    ['facevalue','face','nominal'],
+    ['position','amount']
+  );
+  // Market Value — from file (used directly, skips Yahoo)
+  const mvCol  = find('marketvalue','mktvalue','mv','notional');
+  // Price — from file (used to calculate MV if qty available)
   const prCol  = find('price','px','last','close','nav');
-  const sCol   = find('sector','assetclass','class','category','type');
-  const cCol   = find('country','region','geography','market');
+  // Other enrichment columns
+  const sCol   = find('sector','assetclass','assettype');
+  const cCol   = find('country','region','geography');
   const iCol   = find('industry','subsector');
-  const ratCol = find('rating','creditrating','moody','snp','fitch');
-  const durCol = find('duration','modifiedduration','dur');
-  const couCol = find('coupon','rate','couponrate');
+  const ratCol = find('rating','creditrating','moodys','snp','fitch');
+  const durCol = find('duration','modifiedduration');
+  const couCol = find('coupon','couponrate');
   const matCol = find('maturity','maturitydate','expiry');
 
-  if(!tCol){alertUp(`Could not detect Ticker column.\nDetected: ${cols.join(', ')}`);return;}
-  // Need either qty or market value
-  if(!qCol && !mvCol){alertUp(`Could not detect Quantity or Market Value column.\nDetected: ${cols.join(', ')}`);return;}
+  // Debug log — visible in F12 console
+  console.log('Helix column detection:', {
+    ticker:tCol, isin:isinCol, name:nCol, qty:qCol,
+    mv:mvCol, price:prCol, sector:sCol, country:cCol,
+    rating:ratCol, duration:durCol, coupon:couCol
+  });
+
+  // Need at least an identifier (ticker or ISIN) and a value source (qty or MV)
+  if(!tCol && !isinCol){
+    alertUp(`Could not detect an identifier column.\n\nColumns found: ${cols.join(', ')}\n\nExpected a column named Ticker, Tickers, Symbol, ISIN or CUSIP.`);
+    return;
+  }
+  if(!qCol && !mvCol){
+    alertUp(`Could not detect Quantity or Market Value column.\n\nColumns found: ${cols.join(', ')}`);
+    return;
+  }
 
   const hasCoupon   = !!couCol;
   const hasDuration = !!durCol;
-  const hasMV       = !!mvCol;
-  const hasPrice    = !!prCol;
 
   // 3. Extract positions
+  // Each row becomes a position if it has an identifier and a value source
   const positions = raw
-    .filter(r=>r[tCol])
-    .map(r=>({
-      name:        nCol   ? String(r[nCol]).trim()   : '',
-      ticker:      String(r[tCol]).trim().toUpperCase(),
-      qty:         qCol   ? parseFloat(String(r[qCol]).replace(/,/g,''))||0 : 0,
-      fileMV:      mvCol  ? parseFloat(String(r[mvCol]).replace(/,/g,''))||0 : 0,
-      filePrice:   prCol  ? parseFloat(String(r[prCol]).replace(/,/g,''))||0 : 0,
-      csvSector:   sCol   ? String(r[sCol]).trim()   : '',
-      csvCountry:  cCol   ? String(r[cCol]).trim()   : '',
-      csvIndustry: iCol   ? String(r[iCol]).trim()   : '',
-      csvRating:   ratCol ? String(r[ratCol]).trim() : '',
-      duration:    durCol ? parseFloat(String(r[durCol]).replace(/,/g,''))||null : null,
-      coupon:      couCol ? parseFloat(String(r[couCol]).replace(/,/g,''))||null : null,
-      maturity:    matCol ? String(r[matCol]).trim() : '',
-    }))
-    .filter(p => p.ticker && (p.qty > 0 || p.fileMV > 0));
+    .filter(r => (tCol && r[tCol]) || (isinCol && r[isinCol]))
+    .map(r => {
+      const rawTicker = tCol    ? String(r[tCol]).trim().toUpperCase()    : '';
+      const rawIsin   = isinCol ? String(r[isinCol]).trim().toUpperCase() : '';
+      const qty       = qCol    ? parseFloat(String(r[qCol]).replace(/,/g,''))  || 0 : 0;
+      const fileMV    = mvCol   ? parseFloat(String(r[mvCol]).replace(/,/g,'')) || 0 : 0;
+      const filePrice = prCol   ? parseFloat(String(r[prCol]).replace(/,/g,'')) || 0 : 0;
 
-  if(!positions.length){alertUp('No valid positions found.');return;}
+      // Determine identifier strategy:
+      // - hasTicker + !fileMV → fetch from Yahoo using ticker
+      // - hasTicker + fileMV  → use file MV, ticker for display only
+      // - noTicker  + ISIN + fileMV → bond with file MV, use ISIN as display id
+      // - noTicker  + ISIN + qty + filePrice → calculate MV from file price × qty
+      // - noTicker  + ISIN only → can't price, flag error
+      const hasTicker  = rawTicker.length > 0 && !rawTicker.match(/^[A-Z]{2}\d{10}$/); // not an ISIN-like value in ticker col
+      const identifier = hasTicker ? rawTicker : rawIsin;  // what we use as the key
+
+      return {
+        identifier,                         // key used throughout — ticker if available, else ISIN
+        ticker:      hasTicker ? rawTicker : '',
+        isin:        rawIsin,
+        name:        nCol   ? String(r[nCol]).trim()    : '',
+        qty,
+        fileMV,
+        filePrice,
+        // Pricing strategy determined per-holding:
+        // 'yahoo'     → has ticker, no file MV/price → fetch Yahoo
+        // 'file-mv'   → file MV provided → use directly
+        // 'file-calc' → file price × qty
+        // 'isin-only' → ISIN only, no price source → error
+        pricingStrategy: hasTicker && !fileMV && !filePrice ? 'yahoo'
+                       : fileMV > 0                         ? 'file-mv'
+                       : filePrice > 0 && qty > 0           ? 'file-calc'
+                       : hasTicker && !fileMV               ? 'yahoo'
+                       : 'isin-only',
+        csvSector:   sCol   ? String(r[sCol]).trim()   : '',
+        csvCountry:  cCol   ? String(r[cCol]).trim()   : '',
+        csvIndustry: iCol   ? String(r[iCol]).trim()   : '',
+        csvRating:   ratCol ? String(r[ratCol]).trim() : '',
+        duration:    durCol ? parseFloat(String(r[durCol]).replace(/,/g,'')) || null : null,
+        coupon:      couCol ? parseFloat(String(r[couCol]).replace(/,/g,'')) || null : null,
+        maturity:    matCol ? String(r[matCol]).trim() : '',
+      };
+    })
+    .filter(p => p.identifier && (p.qty > 0 || p.fileMV > 0 || p.filePrice > 0));
+
+  if(!positions.length){ alertUp('No valid positions found. Check that rows have an identifier (Ticker/ISIN) and a quantity or market value.'); return; }
   setProg(15);
 
-  // 4. Determine which tickers need Yahoo (those without file price/MV)
-  const needsYahoo = positions.filter(p => !p.fileMV && !p.filePrice);
+  // 4. Fetch Yahoo prices — only for positions that need it (have ticker, no file MV/price)
+  const needsYahoo = positions.filter(p => p.pricingStrategy === 'yahoo');
   const priceData  = {};
   const failed     = [];
 
   if(needsYahoo.length > 0){
-    document.getElementById('progress-track').style.display='block';
-    for(let i=0;i<needsYahoo.length;i+=10){
-      const batch=needsYahoo.slice(i,i+10);
-      const done=Math.min(i+10,needsYahoo.length);
-      setLoad('Fetching live market data…',`${done} of ${needsYahoo.length} securities`);
-      setProg(15+Math.round((done/needsYahoo.length)*60));
-      document.getElementById('loading-tickers').textContent=batch.map(p=>p.ticker).join(' · ');
+    document.getElementById('progress-track').style.display = 'block';
+    for(let i = 0; i < needsYahoo.length; i += 10){
+      const batch = needsYahoo.slice(i, i + 10);
+      const done  = Math.min(i + 10, needsYahoo.length);
+      setLoad('Fetching live market data…', `${done} of ${needsYahoo.length} securities`);
+      setProg(15 + Math.round((done / needsYahoo.length) * 60));
+      document.getElementById('loading-tickers').textContent = batch.map(p => p.ticker).join(' · ');
       try{
-        const res=await fetch(`${WORKER}/prices?tickers=${encodeURIComponent(batch.map(p=>p.ticker).join(','))}`);
-        if(!res.ok)throw new Error('HTTP '+res.status);
-        const d=await res.json();Object.assign(priceData,d);
-        batch.forEach(p=>{if(d[p.ticker]?.error||!d[p.ticker]?.price)failed.push(p.ticker);});
-      }catch(e){console.error('Batch error:',e);batch.forEach(p=>failed.push(p.ticker));}
+        const res = await fetch(`${WORKER}/prices?tickers=${encodeURIComponent(batch.map(p=>p.ticker).join(','))}`);
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        Object.assign(priceData, d);
+        batch.forEach(p => { if(d[p.ticker]?.error || !d[p.ticker]?.price) failed.push(p.ticker); });
+      } catch(e){
+        console.error('Batch error:', e);
+        batch.forEach(p => failed.push(p.ticker));
+      }
     }
   }
 
-  setLoad('Calculating analytics…','Computing weights, P&L and Helix ratings');
-  setProg(80);document.getElementById('loading-tickers').textContent='';
+  setLoad('Calculating analytics…', 'Computing weights, P&L and Helix ratings');
+  setProg(80);
+  document.getElementById('loading-tickers').textContent = '';
 
-  // 5. Determine if prices came from file or Yahoo (for data age badge)
-  const pricesFromFile = needsYahoo.length === 0;
+  // 5. Portfolio-level data source flag
+  // 'mixed' if some holdings use Yahoo and some use file data
+  const yahooCount    = positions.filter(p => p.pricingStrategy === 'yahoo').length;
+  const fileCount     = positions.filter(p => p.pricingStrategy !== 'yahoo').length;
+  const pricesFromFile = yahooCount === 0;
+  const pricingMix    = yahooCount > 0 && fileCount > 0 ? 'mixed' : pricesFromFile ? 'file' : 'live';
 
-  // 6. Enrich holdings
-  const holdings = positions.map(p=>{
+  // 6. Enrich holdings — price, MV, day P&L per holding based on its pricing strategy
+  const holdings = positions.map(p => {
     const pd = priceData[p.ticker] || {};
 
-    // Price: file price → Yahoo price → 0
-    const price = p.filePrice || pd.price || 0;
-    // Market value: file MV → price × qty
-    const mv = p.fileMV || (price * p.qty);
-    const prev = pd.previousClose || 0;
-    // Day P&L only meaningful if we have live prices
-    const dayPnl  = (!p.fileMV && !p.filePrice && prev > 0) ? (price - prev) * p.qty : 0;
-    const dayPct  = (!p.fileMV && !p.filePrice && prev > 0) ? ((price - prev) / prev) * 100 : 0;
+    let price, mv, dayPnl, dayPct, priceSource;
+
+    switch(p.pricingStrategy){
+      case 'yahoo':
+        price       = pd.price || 0;
+        mv          = price * p.qty;
+        const prev  = pd.previousClose || 0;
+        dayPnl      = prev > 0 ? (price - prev) * p.qty : 0;
+        dayPct      = prev > 0 ? ((price - prev) / prev) * 100 : 0;
+        priceSource = price > 0 ? 'yahoo' : 'none';
+        break;
+      case 'file-mv':
+        price       = p.filePrice || (p.qty > 0 ? p.fileMV / p.qty : 0);
+        mv          = p.fileMV;
+        dayPnl      = 0; dayPct = 0;
+        priceSource = 'file-mv';
+        break;
+      case 'file-calc':
+        price       = p.filePrice;
+        mv          = p.filePrice * p.qty;
+        dayPnl      = 0; dayPct = 0;
+        priceSource = 'file-price';
+        break;
+      default: // isin-only — no price source
+        price = 0; mv = 0; dayPnl = 0; dayPct = 0;
+        priceSource = 'none';
+    }
+
+    // Display identifier — prefer short name, then ticker, then ISIN
+    const displayId   = p.ticker || p.isin;
+    const displayName = pd.shortName || pd.longName || p.name || displayId;
 
     const h = {
-      name:        p.name,
-      ticker:      p.ticker,
-      qty:         p.qty,
+      identifier:   p.identifier,
+      ticker:       p.ticker,
+      isin:         p.isin,
+      displayId,
+      name:         p.name,
+      qty:          p.qty,
       price,
-      previousClose: prev,
-      marketValue: mv,
+      marketValue:  mv,
       dayPnl,
       dayPct,
-      priceSource: p.fileMV ? 'file-mv' : p.filePrice ? 'file-price' : (price > 0 ? 'yahoo' : 'none'),
-      currency:    pd.currency || '',
-      shortName:   pd.shortName || pd.longName || p.name || p.ticker,
-      sector:      pd.sector    || p.csvSector   || 'Unknown',
-      industry:    pd.industry  || p.csvIndustry || '',
-      country:     pd.country   || p.csvCountry  || '',
-      sectorSource: pd.sector   ? 'yahoo' : p.csvSector ? 'csv' : 'unknown',
+      priceSource,
+      pricingStrategy: p.pricingStrategy,
+      currency:     pd.currency    || '',
+      shortName:    displayName,
+      sector:       pd.sector      || p.csvSector   || 'Unknown',
+      industry:     pd.industry    || p.csvIndustry || '',
+      country:      pd.country     || p.csvCountry  || '',
+      sectorSource: pd.sector      ? 'yahoo' : p.csvSector ? 'csv' : 'unknown',
       exchangeName: pd.exchangeName || '',
-      // Bond-specific from file
-      duration:    p.duration,
-      coupon:      p.coupon,
-      maturity:    p.maturity,
-      csvRating:   p.csvRating,
-      // Yahoo fundamentals
-      beta:        pd.beta        ?? null,
-      peRatio:     pd.peRatio     ?? null,
-      forwardPE:   pd.forwardPE   ?? null,
-      marketCap:   pd.marketCap   || 0,
-      analystRating: pd.analystRating || 'N/A',
-      analystCount:  pd.analystCount  || 0,
-      strongBuy:   pd.strongBuy  || 0,buy:pd.buy||0,hold:pd.hold||0,sell:pd.sell||0,strongSell:pd.strongSell||0,
-      targetPrice: pd.targetPrice ?? null,
-      esgTotal:    pd.esgTotal    ?? null,
-      esgEnv:      pd.esgEnv      ?? null,
-      esgSocial:   pd.esgSocial   ?? null,
-      esgGov:      pd.esgGov      ?? null,
+      // Bond-specific
+      isin:         p.isin,
+      duration:     p.duration,
+      coupon:       p.coupon,
+      maturity:     p.maturity,
+      csvRating:    p.csvRating,
+      // Yahoo fundamentals (only meaningful for equity/ETF)
+      beta:           pd.beta           ?? null,
+      peRatio:        pd.peRatio        ?? null,
+      forwardPE:      pd.forwardPE      ?? null,
+      marketCap:      pd.marketCap      || 0,
+      analystRating:  pd.analystRating  || 'N/A',
+      analystCount:   pd.analystCount   || 0,
+      strongBuy:pd.strongBuy||0,buy:pd.buy||0,hold:pd.hold||0,sell:pd.sell||0,strongSell:pd.strongSell||0,
+      targetPrice:    pd.targetPrice    ?? null,
+      esgTotal:       pd.esgTotal       ?? null,
+      esgEnv:         pd.esgEnv         ?? null,
+      esgSocial:      pd.esgSocial      ?? null,
+      esgGov:         pd.esgGov         ?? null,
       dividendYield:  pd.dividendYield  ?? null,
       returnOnEquity: pd.returnOnEquity ?? null,
       debtToEquity:   pd.debtToEquity   ?? null,
@@ -869,18 +972,23 @@ async function _process(buf, file){
       revenueGrowth:  pd.revenueGrowth  ?? null,
       fiftyTwoWeekHigh: pd.fiftyTwoWeekHigh || 0,
       fiftyTwoWeekLow:  pd.fiftyTwoWeekLow  || 0,
-      hasError: !!pd.error || (!mv && !p.fileMV),
+      hasError: priceSource === 'none',
     };
-    // Helix quant rating (skipped for bonds — not enough fundamental data)
-    const isBond = p.coupon != null || p.duration != null ||
+
+    // Helix quant rating — skip for bonds (no fundamental data) and ISIN-only holdings
+    const isBond = p.coupon != null || p.duration != null || p.pricingStrategy === 'isin-only' ||
       (h.sector||'').toLowerCase().includes('fixed') ||
       (h.sector||'').toLowerCase().includes('sovereign') ||
       (h.sector||'').toLowerCase().includes('bond');
-    if(!isBond){
-      const qr=computeHelixRating(h);
-      h.helixScore=qr.score;h.helixRating=qr.rating;h.helixFactors=qr.factors;h.helixConfidence=qr.confidence;
+
+    if(!isBond && priceSource !== 'none'){
+      const qr = computeHelixRating(h);
+      h.helixScore = qr.score; h.helixRating = qr.rating;
+      h.helixFactors = qr.factors; h.helixConfidence = qr.confidence;
     } else {
-      h.helixScore=null;h.helixRating='N/A (Bond)';h.helixFactors=[];h.helixConfidence=0;h.isBond=true;
+      h.helixScore = null;
+      h.helixRating = isBond ? 'N/A (Bond)' : 'Insufficient Data';
+      h.helixFactors = []; h.helixConfidence = 0; h.isBond = isBond;
     }
     return h;
   });
@@ -905,7 +1013,8 @@ async function _process(buf, file){
     displayName: file.name.replace(/\.[^.]+$/,''),
     loadedAt: new Date().toISOString(),
     portfolioType,
-    pricesFromFile,
+    pricesFromFile: pricingMix === 'file',
+    pricingMix,   // 'live' | 'file' | 'mixed'
     hasDuration,
     hasCoupon,
     holdings,
@@ -1022,9 +1131,9 @@ function renderPortfolioTable(list){
     const eqH = p.holdings.filter(h=>h.helixScore!=null);
     const avgH = eqH.length ? Math.round(eqH.reduce((s,h)=>s+h.helixScore,0)/eqH.length) : null;
     const hCol = avgH>=70?'var(--green)':avgH>=50?'var(--amber)':avgH!=null?'var(--red)':'var(--text3)';
-    const dateBadge = p.pricesFromFile
-      ? `<span class="data-age" title="Prices from uploaded file">File data</span>`
-      : `<span class="data-live">Live</span>`;
+    const dateBadge = p.pricingMix === 'live'  ? `<span class="data-live">Live</span>`
+                    : p.pricingMix === 'file'  ? `<span class="data-age">File data</span>`
+                    :                            `<span class="data-age">Mixed</span>`;
     const typeColor = p.portfolioType==='Equity'?'badge-blue':p.portfolioType==='Fixed Income'?'badge-green':'badge-amber';
     const pDayPct = p.totalMV>0?(p.totalDayPnl/(p.totalMV-p.totalDayPnl))*100:0;
     return`<tr style="cursor:pointer" onclick="loadPortfolioDetail('${p.id}')">
@@ -1051,7 +1160,7 @@ function renderLoadedList(){
     <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
       <div>
         <div style="font-size:13px;font-weight:600;color:var(--text)">${p.displayName}</div>
-        <div style="font-size:11px;color:var(--text3)">${p.portfolioType} · ${p.holdings.length} positions · ${fmtCcy(p.totalMV)} · ${p.pricesFromFile?'File data':'Live prices'}</div>
+        <div style="font-size:11px;color:var(--text3)">${p.portfolioType} · ${p.holdings.length} positions · ${fmtCcy(p.totalMV)} · ${p.pricingMix==='live'?'Live prices':p.pricingMix==='file'?'File data':'Mixed data'}</div>
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary btn-sm" onclick="loadPortfolioDetail('${p.id}')">View →</button>
@@ -1079,9 +1188,10 @@ function loadPortfolioDetail(id){
   const typeColor = p.portfolioType==='Equity'?'badge-blue':p.portfolioType==='Fixed Income'?'badge-green':'badge-amber';
   document.getElementById('d-type-badge').innerHTML =
     `<span class="badge ${typeColor}">${p.portfolioType}</span>`;
-  document.getElementById('d-data-badge').innerHTML = p.pricesFromFile
-    ? `<span class="data-age">File data · prices as of upload</span>`
-    : `<span class="data-live">Live prices</span>`;
+  document.getElementById('d-data-badge').innerHTML =
+    p.pricingMix === 'live'  ? `<span class="data-live">Live prices</span>` :
+    p.pricingMix === 'file'  ? `<span class="data-age">File data · prices as of upload</span>` :
+                               `<span class="data-age">Mixed · Live + File data</span>`;
 
   // Summary metrics
   const sorted = [...p.holdings].sort((a,b)=>b.dayPct-a.dayPct);
@@ -1265,19 +1375,19 @@ function renderDetailTable(list){
   document.getElementById('d-holdings-tbody').innerHTML = !list.length
     ?'<tr><td colspan="16" style="text-align:center;padding:30px;color:var(--text3)">No positions match your filter</td></tr>'
     :list.map(h=>`<tr>
-      <td><span class="ticker-cell" title="${h.country} · ${h.exchangeName||''}">${h.ticker}</span>${h.hasError?'<span class="error-pill">!</span>':''}</td>
+      <td><span class="ticker-cell" title="${h.isin?'ISIN: '+h.isin+' · ':''  }${h.country} · ${h.exchangeName||''}">${h.displayId||h.ticker}</span>${h.hasError?'<span class="error-pill" title="No price data">!</span>':''}</td>
       <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;color:var(--text)">${h.shortName||h.name||'—'}</td>
       <td style="font-size:11px;color:var(--text3)">${h.sector||'—'}${h.sectorSource==='csv'?'<span style="font-size:9px;color:var(--blue);margin-left:4px;opacity:.7">CSV</span>':''}</td>
       <td style="font-size:11px;color:var(--text3)">${h.country||'—'}</td>
       <td style="color:var(--text)">${h.qty?fmtNum(h.qty):'—'}</td>
       <td style="font-family:monospace;font-size:12px">
-        ${fmtPrice(h.price,h.currency)}
-        ${h.priceSource==='file-mv'?'<span style="font-size:9px;color:var(--amber);margin-left:4px">FILE</span>':''}
+        ${fmtPrice(h.price, h.currency)}
+        ${h.priceSource==='file-mv'||h.priceSource==='file-price'?'<span style="font-size:9px;color:var(--amber);margin-left:3px" title="Price from file">FILE</span>':''}
       </td>
       <td style="font-weight:500;color:var(--text)">${fmtCcy(h.marketValue)}</td>
       <td>${h.weight?h.weight.toFixed(2)+'%':'—'}</td>
-      <td class="${h.dayPnl>=0?'up':'down'}">${h.priceSource==='file-mv'?'—':fmtCcy(h.dayPnl)}</td>
-      <td class="${h.dayPct>=0?'up':'down'}" style="font-weight:600">${h.priceSource==='file-mv'?'—':fmtPct(h.dayPct)}</td>
+      <td class="${h.dayPnl>=0?'up':'down'}">${h.priceSource==='file-mv'||h.priceSource==='file-price'?'<span style="color:var(--text3)">—</span>':fmtCcy(h.dayPnl)}</td>
+      <td class="${h.dayPct>=0?'up':'down'}" style="font-weight:600">${h.priceSource==='file-mv'||h.priceSource==='file-price'?'<span style="color:var(--text3)">—</span>':fmtPct(h.dayPct)}</td>
       <td>${targetDelta(h)}</td>
       <td>${analystBadge(h.analystRating)}</td>
       <td>${helixBadge(h)}</td>
@@ -1345,7 +1455,7 @@ ${portfolios.map(p=>{
   const eqH=p.holdings.filter(h=>h.helixScore!=null);
   const avgH=eqH.length?Math.round(eqH.reduce((s,h)=>s+h.helixScore,0)/eqH.length):null;
   const pnlPct=(p.totalMV-p.totalDayPnl)>0?(p.totalDayPnl/(p.totalMV-p.totalDayPnl))*100:0;
-  return`- ${p.displayName} (${p.portfolioType}): ${fmtCcy(p.totalMV)} | Day ${fmtPct(pnlPct)} | ${p.holdings.length} positions | Avg Helix: ${avgH!=null?avgH+'/100':'N/A'} | ${p.pricesFromFile?'File data':'Live prices'}`;
+  return`- ${p.displayName} (${p.portfolioType}): ${fmtCcy(p.totalMV)} | Day ${fmtPct(pnlPct)} | ${p.holdings.length} positions | Avg Helix: ${avgH!=null?avgH+'/100':'N/A'} | ${p.pricingMix==='live'?'Live prices':p.pricingMix==='file'?'File data':'Mixed data'}`;
 }).join('\n')}
 
 ${focusPortfolio?`ACTIVE PORTFOLIO: ${focusPortfolio.displayName}
