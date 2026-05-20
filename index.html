@@ -419,8 +419,8 @@ tr:hover td{background:var(--hover)}
         </div>
         <div style="overflow-x:auto"><table>
           <thead><tr id="d-holdings-thead">
-            <th>Ticker</th><th>Name</th><th>Sector</th><th>Country</th>
-            <th>Qty / Face</th><th>Price</th><th>Mkt Value</th><th>Weight</th>
+            <th>Ticker / ISIN</th><th>Name</th><th>Asset Class</th><th>Sector</th><th>Country</th>
+            <th>Qty / Par</th><th>Price</th><th>Mkt Value</th><th>Weight</th>
             <th>Day P&L</th><th>Day %</th><th>Target</th>
             <th title="Yahoo Finance sell-side">Yahoo Rating</th>
             <th title="Helix quant score">⬡ Helix Rating</th>
@@ -705,14 +705,26 @@ function computeHelixRating(h){
 function detectPortfolioType(holdings, hasCoupon, hasDuration){
   const total = holdings.length;
   if(total === 0) return 'Unknown';
-  const fiKeywords = ['bond','treasury','gilt','bund','credit','fixed income','sovereign','note','bill','etf'];
-  const fiSectors  = holdings.filter(h => {
+
+  // Count by asset class field if available
+  const hasAssetClassData = holdings.some(h => h.assetClass);
+  if(hasAssetClassData){
+    const acLower = h => (h.assetClass||'').toLowerCase();
+    const fiCount  = holdings.filter(h => acLower(h).includes('fixed') || acLower(h).includes('bond') || acLower(h).includes('credit') || acLower(h).includes('cash')).length;
+    const eqCount  = holdings.filter(h => acLower(h).includes('equity') || acLower(h).includes('stock')).length;
+    if(fiCount/total > 0.8)  return 'Fixed Income';
+    if(eqCount/total > 0.8)  return 'Equity';
+    return 'Multi-Asset';
+  }
+
+  // Fall back to sector-based detection
+  if(hasCoupon || hasDuration) return 'Fixed Income';
+  const fiSectors = holdings.filter(h => {
     const s = (h.sector||'').toLowerCase();
     return s.includes('fixed') || s.includes('sovereign') || s.includes('bond') || s.includes('cash');
   }).length;
-  if(hasCoupon || hasDuration) return fiSectors/total > 0.3 ? 'Fixed Income' : 'Multi-Asset';
-  if(fiSectors / total > 0.6) return 'Fixed Income';
-  if(fiSectors / total > 0.2) return 'Multi-Asset';
+  if(fiSectors/total > 0.6) return 'Fixed Income';
+  if(fiSectors/total > 0.2) return 'Multi-Asset';
   return 'Equity';
 }
 
@@ -744,13 +756,13 @@ async function _process(buf, file){
   const find = (...v) => cols.find(c => v.some(x => cl(c).includes(x))) || null;
   const findPriority = (...groups) => { for(const g of groups){const r=find(...g);if(r)return r;} return null; };
 
-  // Ticker — explicit ticker first, never fall back to ISIN here (ISIN has its own column)
+  // Ticker — explicit ticker first, never fall back to ISIN here
   const tCol = findPriority(
     ['tickers','ticker'],
     ['symbol','scrip','bloombergticker'],
-    ['code']                           // generic 'code' only if nothing else
+    ['code']
   );
-  // ISIN — separate column, used for individual bonds that have no Yahoo ticker
+  // ISIN — separate identifier column for bonds
   const isinCol = findPriority(
     ['isin'],
     ['cusip','sedol']
@@ -759,23 +771,32 @@ async function _process(buf, file){
   const nCol = findPriority(
     ['instrument','security','description'],
     ['stock','company'],
-    ['name']                           // last — too generic
+    ['name']
   );
-  // Quantity
+  // Quantity — shares for equity, face amount for bonds
+  // Par Value is quantity (face amount), NOT market value
   const qCol = findPriority(
     ['quantity','quantities'],
     ['qty','units','shares','holding'],
-    ['facevalue','face','nominal'],
+    ['parvalue','par','facevalue','face'],
     ['position','amount']
   );
-  // Market Value — from file (used directly, skips Yahoo)
-  const mvCol  = find('marketvalue','mktvalue','mv','notional');
-  // Price — from file (used to calculate MV if qty available)
+  // Par Value — stored separately for display alongside market value
+  const parCol = find('parvalue','par');
+  // Market Value — Notional Value from iShares/bond files is market value, use directly
+  const mvCol = findPriority(
+    ['notionalvalue','notional'],
+    ['marketvalue','mktvalue','mv'],
+  );
+  // Price from file
   const prCol  = find('price','px','last','close','nav');
-  // Other enrichment columns
-  const sCol   = find('sector','assetclass','assettype');
+  // Sector — only map actual sector, not asset class
+  const sCol   = findPriority(['sector'],['subsector']);
+  // Asset Class — separate from sector (Equity / Fixed Income / Cash etc.)
+  const acCol  = findPriority(['assetclass','assettype'],['type','class']);
+  // Other enrichment
   const cCol   = find('country','region','geography');
-  const iCol   = find('industry','subsector');
+  const iCol   = find('industry');
   const ratCol = find('rating','creditrating','moodys','snp','fitch');
   const durCol = find('duration','modifiedduration');
   const couCol = find('coupon','couponrate');
@@ -783,9 +804,9 @@ async function _process(buf, file){
 
   // Debug log — visible in F12 console
   console.log('Helix column detection:', {
-    ticker:tCol, isin:isinCol, name:nCol, qty:qCol,
-    mv:mvCol, price:prCol, sector:sCol, country:cCol,
-    rating:ratCol, duration:durCol, coupon:couCol
+    ticker:tCol, isin:isinCol, name:nCol, qty:qCol, par:parCol,
+    mv:mvCol, price:prCol, sector:sCol, assetClass:acCol,
+    country:cCol, rating:ratCol, duration:durCol, coupon:couCol
   });
 
   // Need at least an identifier (ticker or ISIN) and a value source (qty or MV)
@@ -808,44 +829,44 @@ async function _process(buf, file){
     .map(r => {
       const rawTicker = tCol    ? String(r[tCol]).trim().toUpperCase()    : '';
       const rawIsin   = isinCol ? String(r[isinCol]).trim().toUpperCase() : '';
-      const qty       = qCol    ? parseFloat(String(r[qCol]).replace(/,/g,''))  || 0 : 0;
-      const fileMV    = mvCol   ? parseFloat(String(r[mvCol]).replace(/,/g,'')) || 0 : 0;
-      const filePrice = prCol   ? parseFloat(String(r[prCol]).replace(/,/g,'')) || 0 : 0;
+      const qty       = qCol    ? parseFloat(String(r[qCol]).replace(/,/g,''))    || 0 : 0;
+      const fileMV    = mvCol   ? parseFloat(String(r[mvCol]).replace(/,/g,''))   || 0 : 0;
+      const filePrice = prCol   ? parseFloat(String(r[prCol]).replace(/,/g,''))   || 0 : 0;
+      const parValue  = parCol  ? parseFloat(String(r[parCol]).replace(/,/g,''))  || 0 : 0;
 
-      // Determine identifier strategy:
-      // - hasTicker + !fileMV → fetch from Yahoo using ticker
-      // - hasTicker + fileMV  → use file MV, ticker for display only
-      // - noTicker  + ISIN + fileMV → bond with file MV, use ISIN as display id
-      // - noTicker  + ISIN + qty + filePrice → calculate MV from file price × qty
-      // - noTicker  + ISIN only → can't price, flag error
-      const hasTicker  = rawTicker.length > 0 && !rawTicker.match(/^[A-Z]{2}\d{10}$/); // not an ISIN-like value in ticker col
-      const identifier = hasTicker ? rawTicker : rawIsin;  // what we use as the key
+      // Detect if ticker column contains an ISIN-like value (12 char alphanumeric starting with 2 letters)
+      const hasTicker = rawTicker.length > 0 && !rawTicker.match(/^[A-Z]{2}[A-Z0-9]{10}$/);
+      const identifier = hasTicker ? rawTicker : rawIsin;
+
+      // Per-row pricing strategy:
+      // 'yahoo'     → ticker present, no file MV → fetch live from Yahoo
+      // 'file-mv'   → Notional Value present → use directly, skip Yahoo
+      // 'file-calc' → file price × qty
+      // 'isin-only' → ISIN only, no price source → display only, flag error
+      const pricingStrategy =
+        fileMV > 0                             ? 'file-mv'   :
+        filePrice > 0 && qty > 0              ? 'file-calc' :
+        hasTicker                              ? 'yahoo'     :
+                                                 'isin-only';
 
       return {
-        identifier,                         // key used throughout — ticker if available, else ISIN
+        identifier,
         ticker:      hasTicker ? rawTicker : '',
         isin:        rawIsin,
-        name:        nCol   ? String(r[nCol]).trim()    : '',
+        name:        nCol   ? String(r[nCol]).trim()  : '',
         qty,
+        parValue,                                              // face/par — display only
         fileMV,
         filePrice,
-        // Pricing strategy determined per-holding:
-        // 'yahoo'     → has ticker, no file MV/price → fetch Yahoo
-        // 'file-mv'   → file MV provided → use directly
-        // 'file-calc' → file price × qty
-        // 'isin-only' → ISIN only, no price source → error
-        pricingStrategy: hasTicker && !fileMV && !filePrice ? 'yahoo'
-                       : fileMV > 0                         ? 'file-mv'
-                       : filePrice > 0 && qty > 0           ? 'file-calc'
-                       : hasTicker && !fileMV               ? 'yahoo'
-                       : 'isin-only',
-        csvSector:   sCol   ? String(r[sCol]).trim()   : '',
-        csvCountry:  cCol   ? String(r[cCol]).trim()   : '',
-        csvIndustry: iCol   ? String(r[iCol]).trim()   : '',
-        csvRating:   ratCol ? String(r[ratCol]).trim() : '',
-        duration:    durCol ? parseFloat(String(r[durCol]).replace(/,/g,'')) || null : null,
-        coupon:      couCol ? parseFloat(String(r[couCol]).replace(/,/g,'')) || null : null,
-        maturity:    matCol ? String(r[matCol]).trim() : '',
+        pricingStrategy,
+        csvSector:    sCol   ? String(r[sCol]).trim()   : '',
+        csvAssetClass: acCol ? String(r[acCol]).trim()  : '', // Asset Class separate from Sector
+        csvCountry:   cCol   ? String(r[cCol]).trim()   : '',
+        csvIndustry:  iCol   ? String(r[iCol]).trim()   : '',
+        csvRating:    ratCol ? String(r[ratCol]).trim() : '',
+        duration:     durCol ? parseFloat(String(r[durCol]).replace(/,/g,'')) || null : null,
+        coupon:       couCol ? parseFloat(String(r[couCol]).replace(/,/g,'')) || null : null,
+        maturity:     matCol ? String(r[matCol]).trim() : '',
       };
     })
     .filter(p => p.identifier && (p.qty > 0 || p.fileMV > 0 || p.filePrice > 0));
@@ -933,6 +954,7 @@ async function _process(buf, file){
       displayId,
       name:         p.name,
       qty:          p.qty,
+      parValue:     p.parValue,                               // face/par — display only
       price,
       marketValue:  mv,
       dayPnl,
@@ -941,18 +963,19 @@ async function _process(buf, file){
       pricingStrategy: p.pricingStrategy,
       currency:     pd.currency    || '',
       shortName:    displayName,
-      sector:       pd.sector      || p.csvSector   || 'Unknown',
+      // Sector from Yahoo first, CSV sector second, asset class as fallback label
+      sector:       pd.sector      || p.csvSector   || p.csvAssetClass || 'Unknown',
+      assetClass:   p.csvAssetClass || '',                    // always stored separately
       industry:     pd.industry    || p.csvIndustry || '',
       country:      pd.country     || p.csvCountry  || '',
-      sectorSource: pd.sector      ? 'yahoo' : p.csvSector ? 'csv' : 'unknown',
+      sectorSource: pd.sector ? 'yahoo' : p.csvSector ? 'csv' : p.csvAssetClass ? 'assetclass' : 'unknown',
       exchangeName: pd.exchangeName || '',
       // Bond-specific
-      isin:         p.isin,
       duration:     p.duration,
       coupon:       p.coupon,
       maturity:     p.maturity,
       csvRating:    p.csvRating,
-      // Yahoo fundamentals (only meaningful for equity/ETF)
+      // Yahoo fundamentals
       beta:           pd.beta           ?? null,
       peRatio:        pd.peRatio        ?? null,
       forwardPE:      pd.forwardPE      ?? null,
@@ -1373,13 +1396,21 @@ function toggleRisk(){
 /* ═══ DETAIL HOLDINGS TABLE ════════════════════════════════════════════ */
 function renderDetailTable(list){
   document.getElementById('d-holdings-tbody').innerHTML = !list.length
-    ?'<tr><td colspan="16" style="text-align:center;padding:30px;color:var(--text3)">No positions match your filter</td></tr>'
+    ?'<tr><td colspan="17" style="text-align:center;padding:30px;color:var(--text3)">No positions match your filter</td></tr>'
     :list.map(h=>`<tr>
-      <td><span class="ticker-cell" title="${h.isin?'ISIN: '+h.isin+' · ':''  }${h.country} · ${h.exchangeName||''}">${h.displayId||h.ticker}</span>${h.hasError?'<span class="error-pill" title="No price data">!</span>':''}</td>
+      <td>
+        <span class="ticker-cell" title="${h.isin?'ISIN: '+h.isin+' · ':''}${h.country} · ${h.exchangeName||''}">${h.displayId||h.ticker}</span>
+        ${h.isin&&h.ticker?'<div style="font-size:10px;color:var(--text3);margin-top:1px">'+h.isin+'</div>':''}
+        ${h.hasError?'<span class="error-pill" title="No price data">!</span>':''}
+      </td>
       <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;color:var(--text)">${h.shortName||h.name||'—'}</td>
-      <td style="font-size:11px;color:var(--text3)">${h.sector||'—'}${h.sectorSource==='csv'?'<span style="font-size:9px;color:var(--blue);margin-left:4px;opacity:.7">CSV</span>':''}</td>
+      <td style="font-size:11px;color:var(--text3)">${h.assetClass||'—'}</td>
+      <td style="font-size:11px;color:var(--text3)">${h.sector&&h.sector!=='Unknown'?h.sector:'—'}${h.sectorSource==='csv'?'<span style="font-size:9px;color:var(--blue);margin-left:4px;opacity:.7">CSV</span>':''}</td>
       <td style="font-size:11px;color:var(--text3)">${h.country||'—'}</td>
-      <td style="color:var(--text)">${h.qty?fmtNum(h.qty):'—'}</td>
+      <td style="color:var(--text);font-family:monospace;font-size:12px">
+        ${h.qty?fmtNum(h.qty):'—'}
+        ${h.parValue&&h.parValue!==h.qty?'<div style="font-size:10px;color:var(--text3)">Par: '+fmtCcy(h.parValue)+'</div>':''}
+      </td>
       <td style="font-family:monospace;font-size:12px">
         ${fmtPrice(h.price, h.currency)}
         ${h.priceSource==='file-mv'||h.priceSource==='file-price'?'<span style="font-size:9px;color:var(--amber);margin-left:3px" title="Price from file">FILE</span>':''}
