@@ -70,6 +70,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .up{color:var(--green)}.down{color:var(--red)}.neutral{color:var(--amber)}
 .bt-blue{border-top:3px solid var(--blue)}.bt-green{border-top:3px solid var(--green)}
 .bt-amber{border-top:3px solid var(--amber)}.bt-red{border-top:3px solid var(--red)}
+.bt-purple{border-top:3px solid var(--purple)}
 
 /* Cards */
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:20px}
@@ -394,6 +395,18 @@ tr:hover td{background:var(--hover)}
               </div>
               <div class="risk-panel-sub">Duration &amp; rate sensitivity</div>
               <div id="rp-duration-content"></div>
+            </div>
+
+            <!-- Stress Scenarios (full width) -->
+            <div class="risk-panel full">
+              <div class="risk-panel-title">
+                <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                Stress Scenarios
+              </div>
+              <div class="risk-panel-sub">Your portfolio's actual return during historical crisis periods</div>
+              <div style="margin-top:8px" id="rp-stress-content">
+                <div style="color:var(--text3);font-size:12px">Expand risk section to calculate…</div>
+              </div>
             </div>
 
             <!-- Liquidity Profile (full width) -->
@@ -1198,6 +1211,7 @@ function loadPortfolioDetail(id){
   if(!p) return;
   activePortfolioId = id;
   activeDetailHoldings = [...p.holdings];
+  p._historyLoaded = p._historyLoaded || false;  // preserve cache across re-opens of same portfolio
 
   const totalMV = p.totalMV, totalDayPnl = p.totalDayPnl;
   const pnlPct  = (totalMV-totalDayPnl)>0?(totalDayPnl/(totalMV-totalDayPnl))*100:0;
@@ -1269,22 +1283,20 @@ function buildRiskPanels(p){
   const holdings = p.holdings;
   const totalMV  = p.totalMV;
 
-  // VaR (from weighted beta)
-  const withBeta=holdings.filter(h=>h.beta!=null&&h.beta!==0&&h.marketValue>0);
-  const wBeta=withBeta.length?withBeta.reduce((s,h)=>s+h.beta*(h.marketValue/totalMV),0):null;
-  const v95=wBeta?wBeta*0.01*1.645*100:null, v99=wBeta?wBeta*0.01*2.326*100:null;
-  const withPE=holdings.filter(h=>h.peRatio!=null&&h.peRatio>0&&h.marketValue>0);
-  const wPE=withPE.length?withPE.reduce((s,h)=>s+h.peRatio*(h.marketValue/totalMV),0):null;
-  const sells=holdings.filter(h=>h.analystRating==='Sell'||h.analystRating==='Strong Sell').length;
-
+  // VaR grid — shows loading state; replaced by fetchAndBuildHistoricalRisk on expand
   document.getElementById('d-var-grid').innerHTML=`
-    <div class="var-card bt-amber"><div class="var-label">VaR 95% · 1D</div><div class="var-value">${v95?v95.toFixed(2)+'%':'—'}</div><div class="var-sub">${v95?fmtCcy(totalMV*v95/100)+' at risk':'No beta data'}</div></div>
-    <div class="var-card bt-red"><div class="var-label">VaR 99% · 1D</div><div class="var-value">${v99?v99.toFixed(2)+'%':'—'}</div><div class="var-sub">${v99?fmtCcy(totalMV*v99/100)+' at risk':'Illustrative'}</div></div>
-    <div class="var-card bt-blue"><div class="var-label">Portfolio Beta</div><div class="var-value">${wBeta?wBeta.toFixed(2):'—'}</div><div class="var-sub">${wBeta?(wBeta>1?'Aggressive':'Defensive'):''}</div></div>
-    <div class="var-card bt-amber"><div class="var-label">Avg P/E</div><div class="var-value">${wPE?wPE.toFixed(1)+'x':'—'}</div><div class="var-sub">${wPE?(wPE>25?'Elevated':wPE>15?'Fair':'Value'):'No P/E data'}</div></div>
-    <div class="var-card bt-red"><div class="var-label">Sell / Strong Sell</div><div class="var-value">${sells}</div><div class="var-sub">of ${holdings.length} positions</div></div>`;
+    <div class="var-card bt-amber"><div class="var-label">VaR 95% · 1D</div><div class="var-value" id="rv-var95">—</div><div class="var-sub" id="rv-var95s">Expand to calculate</div></div>
+    <div class="var-card bt-red"><div class="var-label">VaR 99% · 1D</div><div class="var-value" id="rv-var99">—</div><div class="var-sub" id="rv-var99s">Historical simulation</div></div>
+    <div class="var-card bt-purple"><div class="var-label">CVaR 95%</div><div class="var-value" id="rv-cvar">—</div><div class="var-sub" id="rv-cvars">Expected shortfall</div></div>
+    <div class="var-card bt-blue"><div class="var-label">Volatility (ann.)</div><div class="var-value" id="rv-vol">—</div><div class="var-sub" id="rv-vols">252-day realised</div></div>
+    <div class="var-card bt-red"><div class="var-label">Max Drawdown</div><div class="var-value" id="rv-mdd">—</div><div class="var-sub" id="rv-mdds">Peak to trough</div></div>
+    <div class="var-card bt-green"><div class="var-label">Sharpe Ratio</div><div class="var-value" id="rv-sharpe">—</div><div class="var-sub" id="rv-sharpes">Return / risk</div></div>`;
 
-  // Analyst breakdown
+  // Stress panel placeholder
+  document.getElementById('rp-stress-content').innerHTML =
+    '<div style="color:var(--text3);font-size:12px;padding:8px 0">Expand risk section to calculate from your portfolio history…</div>';
+
+  // Analyst breakdown (instant)
   const cats=['Strong Buy','Buy','Hold','Sell','Strong Sell','N/A'];
   const cols=['#22c55e','#86efac','#f59e0b','#ef4444','#dc2626','#64748b'];
   const cnts=Object.fromEntries(cats.map(c=>[c,0]));
@@ -1295,7 +1307,7 @@ function buildRiskPanels(p){
     return`<div class="risk-bar-item"><div class="risk-bar-label"><span>${analystBadge(c)} <span style="color:var(--text3);font-size:11px">${cnts[c]}</span></span><span style="font-weight:600">${pct}%</span></div><div class="risk-bar-track"><div class="risk-bar-fill" style="width:${pct}%;background:${cols[cats.indexOf(c)]}"></div></div></div>`;
   }).join('')||'<div style="color:var(--text3);font-size:12px">No analyst data available</div>';
 
-  // ESG
+  // ESG (instant)
   const withESG=holdings.filter(h=>h.esgTotal!=null);
   if(!withESG.length){
     document.getElementById('rp-esg-sub').textContent='No ESG data for this portfolio';
@@ -1309,30 +1321,29 @@ function buildRiskPanels(p){
     }).join('');
   }
 
-  // Credit Quality (show if portfolio has credit ratings in file or FI type)
+  // Credit Quality
   const withRating=holdings.filter(h=>h.csvRating&&h.csvRating!=='');
-  document.getElementById('rp-credit').style.display = (withRating.length>0||p.portfolioType==='Fixed Income') ? 'block' : 'none';
+  document.getElementById('rp-credit').style.display=(withRating.length>0||p.portfolioType==='Fixed Income')?'block':'none';
   if(withRating.length>0){
     const ratingGroups={};
     withRating.forEach(h=>{const r=h.csvRating;ratingGroups[r]=(ratingGroups[r]||0)+h.marketValue;});
-    const totalRated=withRating.reduce((s,h)=>s+h.marketValue,0);
     const ratingOrder=['AAA','AA+','AA','AA-','A+','A','A-','BBB+','BBB','BBB-','BB+','BB','BB-','B+','B','B-','CCC','N/A'];
     const sorted=Object.entries(ratingGroups).sort((a,b)=>{const ai=ratingOrder.indexOf(a[0]),bi=ratingOrder.indexOf(b[0]);return(ai<0?99:ai)-(bi<0?99:bi);});
     const ratingCls=r=>{if(!r)return'badge-gray';const u=r.toUpperCase();return u.startsWith('A')||u==='AAA'?'badge-green':u.startsWith('B')?'badge-amber':'badge-red';};
     document.getElementById('rp-credit-content').innerHTML=`<table style="font-size:12px"><thead><tr><th>Rating</th><th>Exposure</th><th>% Portfolio</th></tr></thead><tbody>
       ${sorted.map(([r,v])=>`<tr><td><span class="badge ${ratingCls(r)}" style="font-size:10px">${r}</span></td><td>${fmtCcy(v)}</td><td>${((v/totalMV)*100).toFixed(1)}%</td></tr>`).join('')}
     </tbody></table>`;
-  } else if(p.portfolioType==='Fixed Income'){
+  }else if(p.portfolioType==='Fixed Income'){
     document.getElementById('rp-credit-content').innerHTML='<div style="color:var(--text3);font-size:12px">Add a Rating column to your file to see credit distribution</div>';
   }
 
-  // Duration / Interest Rate Risk (show if bonds detected)
+  // Duration / Interest Rate Risk
   const withDuration=holdings.filter(h=>h.duration!=null);
-  document.getElementById('rp-duration').style.display = (withDuration.length>0||p.hasDuration) ? 'block' : 'none';
+  document.getElementById('rp-duration').style.display=(withDuration.length>0||p.hasDuration)?'block':'none';
   if(withDuration.length>0){
     const totalDurMV=withDuration.reduce((s,h)=>s+h.marketValue,0);
     const wDur=withDuration.reduce((s,h)=>s+h.duration*(h.marketValue/totalDurMV),0);
-    const dv01=(wDur*totalMV*0.0001).toFixed(0); // approx DV01
+    const dv01=(wDur*totalMV*0.0001).toFixed(0);
     document.getElementById('rp-duration-content').innerHTML=`
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
         <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px">
@@ -1349,48 +1360,195 @@ function buildRiskPanels(p){
       <div style="font-size:11px;color:var(--text3)">+100bps rate shock → approx ${fmtCcy(parseInt(dv01)*100)} P&L impact</div>`;
   }
 
-  // Liquidity Profile (derived from asset type and market)
+  // Liquidity Profile
   buildLiquidityProfile(holdings, totalMV);
 }
 
 function buildLiquidityProfile(holdings, totalMV){
-  // Classify each holding into a liquidity bucket
   const buckets = {'≤ 1 day':0, '2–7 days':0, '8–30 days':0, '> 90 days':0};
   holdings.forEach(h=>{
-    const s = (h.sector||'').toLowerCase();
-    const c = (h.country||'').toLowerCase();
-    const mv = h.marketValue;
-    if(s.includes('cash')) {buckets['≤ 1 day']+=mv;}
-    else if(h.isBond || s.includes('fixed') || s.includes('sovereign') || s.includes('bond')){
-      // Bonds: IG = 2-7 days, HY = 8-30 days
-      const r = (h.csvRating||'').toUpperCase();
+    const s=(h.sector||'').toLowerCase(), c=(h.country||'').toLowerCase(), mv=h.marketValue;
+    if(s.includes('cash')){buckets['≤ 1 day']+=mv;}
+    else if(h.isBond||s.includes('fixed')||s.includes('sovereign')||s.includes('bond')){
+      const r=(h.csvRating||'').toUpperCase();
       if(r.startsWith('A')||r==='AAA'||r==='AA') buckets['2–7 days']+=mv;
       else if(r.startsWith('B')&&!r.startsWith('BB')) buckets['8–30 days']+=mv;
       else buckets['2–7 days']+=mv;
-    } else if(s.includes('real estate')||s.includes('alternative')||s.includes('commodity')){
+    }else if(s.includes('real estate')||s.includes('alternative')||s.includes('commodity')){
       buckets['> 90 days']+=mv;
-    } else if(c.includes('india')||c.includes('china')||c.includes('emerging')){
+    }else if(c.includes('india')||c.includes('china')||c.includes('emerging')){
       buckets['2–7 days']+=mv;
-    } else {
-      buckets['≤ 1 day']+=mv; // liquid equity
-    }
+    }else{buckets['≤ 1 day']+=mv;}
   });
   const colors={'≤ 1 day':'var(--green)','2–7 days':'var(--blue)','8–30 days':'var(--amber)','> 90 days':'var(--red)'};
   document.getElementById('rp-liq-sub').textContent=`${fmtCcy(totalMV)} portfolio · auto-classified by asset type`;
   document.getElementById('rp-liq-bars').innerHTML=Object.entries(buckets).map(([label,mv])=>{
-    const pct=totalMV>0?(mv/totalMV)*100:0;
-    if(pct<0.01) return '';
+    const pct=totalMV>0?(mv/totalMV)*100:0; if(pct<0.01) return '';
     return`<div class="risk-bar-item"><div class="risk-bar-label"><span>${label}</span><span style="font-weight:600;color:${colors[label]}">${pct.toFixed(1)}% · ${fmtCcy(mv)}</span></div><div class="risk-bar-track"><div class="risk-bar-fill" style="width:${Math.min(pct,100)}%;background:${colors[label]}"></div></div></div>`;
   }).join('');
 }
 
-/* ═══ COLLAPSIBLE RISK TOGGLE ══════════════════════════════════════════ */
+/* ═══ HISTORICAL RISK ENGINE ════════════════════════════════════════════ */
+async function fetchAndBuildHistoricalRisk(p){
+  const yahooHoldings=p.holdings.filter(h=>h.ticker&&h.priceSource==='yahoo'&&h.marketValue>0);
+  if(!yahooHoldings.length){
+    _showHistoricalUnavailable('No live-priced holdings to calculate historical risk');
+    p._historyLoaded=true; return;
+  }
+  // Loading spinners
+  ['rv-var95','rv-var99','rv-cvar','rv-vol','rv-mdd','rv-sharpe'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.innerHTML='<span class="spinner" style="width:16px;height:16px;border-width:2px;display:inline-block"></span>';
+  });
+  try{
+    // Fetch historical prices in batches of 10
+    const histData={};
+    const tickers=yahooHoldings.map(h=>h.ticker);
+    for(let i=0;i<tickers.length;i+=10){
+      const batch=tickers.slice(i,i+10);
+      const res=await fetch(`${WORKER}/history?tickers=${encodeURIComponent(batch.join(','))}`);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      Object.assign(histData, await res.json());
+    }
+    // Use ticker with most data as date backbone
+    const backbone=Object.values(histData).filter(d=>d.dates&&d.dates.length>20).sort((a,b)=>b.dates.length-a.dates.length)[0];
+    if(!backbone){_showHistoricalUnavailable('Insufficient historical data');p._historyLoaded=true;return;}
+
+    const totalYahooMV=yahooHoldings.reduce((s,h)=>s+h.marketValue,0);
+    const portfolioReturns=[];
+
+    for(let i=1;i<backbone.dates.length;i++){
+      const date=backbone.dates[i];
+      let portReturn=0,weightUsed=0;
+      yahooHoldings.forEach(h=>{
+        const hd=histData[h.ticker];
+        if(!hd||!hd.dates||hd.dates.length<2) return;
+        const dateIdx=hd.dates.findIndex(d=>Math.abs(d-date)<86400000);
+        if(dateIdx<1) return;
+        const todayP=hd.prices[dateIdx],prevP=hd.prices[dateIdx-1];
+        if(!todayP||!prevP||prevP===0) return;
+        const w=h.marketValue/totalYahooMV;
+        portReturn+=(todayP-prevP)/prevP*w; weightUsed+=w;
+      });
+      if(weightUsed>0.5) portfolioReturns.push(portReturn);
+    }
+
+    if(portfolioReturns.length<20){
+      _showHistoricalUnavailable('Not enough data points ('+portfolioReturns.length+' days)');
+      p._historyLoaded=true; return;
+    }
+
+    // ── All metrics from return series ──
+    const sorted=[...portfolioReturns].sort((a,b)=>a-b);
+    const n=sorted.length;
+    const var95idx=Math.floor(n*0.05), var99idx=Math.floor(n*0.01);
+    const var95=-sorted[var95idx], var99=-sorted[var99idx];
+    const tail95=sorted.slice(0,var95idx+1);
+    const cvar95=-(tail95.reduce((s,r)=>s+r,0)/tail95.length);
+    const mean=portfolioReturns.reduce((s,r)=>s+r,0)/n;
+    const dailyVol=Math.sqrt(portfolioReturns.reduce((s,r)=>s+Math.pow(r-mean,2),0)/n);
+    const annVol=dailyVol*Math.sqrt(252);
+    // Max drawdown
+    let peak=1,maxDD=0,drawdownStart=0,maxDDStart=0,maxDDEnd=0,cumVal=1;
+    const cumVals=[1];
+    portfolioReturns.forEach((r,i)=>{
+      cumVal*=(1+r); cumVals.push(cumVal);
+      if(cumVal>peak){peak=cumVal;drawdownStart=i+1;}
+      const dd=(peak-cumVal)/peak;
+      if(dd>maxDD){maxDD=dd;maxDDStart=drawdownStart;maxDDEnd=i+1;}
+    });
+    const recoveryDays=_calcRecovery(cumVals,maxDDEnd);
+    const annReturn=Math.pow(1+mean,252)-1;
+    const sharpe=annVol>0?(annReturn-0.05)/annVol:null;
+
+    // ── Render metrics ──
+    const totalMV=p.totalMV;
+    _setRiskCard('rv-var95',(var95*100).toFixed(2)+'%', fmtCcy(totalMV*var95)+' at risk · '+n+' day sample');
+    _setRiskCard('rv-var99',(var99*100).toFixed(2)+'%', fmtCcy(totalMV*var99)+' at risk · historical sim');
+    _setRiskCard('rv-cvar', (cvar95*100).toFixed(2)+'%','Avg loss beyond VaR threshold');
+    _setRiskCard('rv-vol',  (annVol*100).toFixed(2)+'%', dailyVol<0.01?'Low volatility':dailyVol<0.02?'Moderate':'High volatility');
+    _setRiskCard('rv-mdd',  '-'+(maxDD*100).toFixed(2)+'%', recoveryDays?'Recovery: ~'+recoveryDays+' days':'Not yet recovered in sample');
+    _setRiskCard('rv-sharpe', sharpe!=null?sharpe.toFixed(2):'—', sharpe>1?'Strong risk-adjusted return':sharpe>0?'Positive':sharpe!=null?'Below risk-free rate':'N/A');
+
+    // ── Stress scenarios ──
+    const scenarios=[
+      {name:'2008 GFC',         from:new Date('2008-09-01').getTime(), to:new Date('2009-03-09').getTime()},
+      {name:'COVID Mar 2020',   from:new Date('2020-02-19').getTime(), to:new Date('2020-03-23').getTime()},
+      {name:'2022 Rate shock',  from:new Date('2022-01-03').getTime(), to:new Date('2022-10-13').getTime()},
+      {name:'2023 Recovery',    from:new Date('2023-01-01').getTime(), to:new Date('2023-12-31').getTime()},
+    ];
+    const stressResults=scenarios.map(s=>{
+      let portRet=0,wUsed=0;
+      yahooHoldings.forEach(h=>{
+        const hd=histData[h.ticker]; if(!hd||!hd.dates) return;
+        const si=_closestDateIdx(hd.dates,s.from), ei=_closestDateIdx(hd.dates,s.to);
+        if(si<0||ei<0||si===ei) return;
+        const sp=hd.prices[si],ep=hd.prices[ei]; if(!sp||!ep||sp===0) return;
+        const w=h.marketValue/totalYahooMV;
+        portRet+=(ep-sp)/sp*w; wUsed+=w;
+      });
+      return{name:s.name, return:wUsed>0.3?portRet:null};
+    });
+    const hasStress=stressResults.some(s=>s.return!=null);
+    if(hasStress){
+      const maxAbs=Math.max(...stressResults.filter(s=>s.return!=null).map(s=>Math.abs(s.return)));
+      document.getElementById('rp-stress-content').innerHTML=
+        stressResults.filter(s=>s.return!=null).map(s=>{
+          const pct=(s.return*100).toFixed(1),col=s.return<0?'var(--red)':'var(--green)';
+          const barW=Math.round((Math.abs(s.return)/maxAbs)*100);
+          return`<div class="risk-bar-item"><div class="risk-bar-label"><span style="font-weight:500">${s.name}</span><span style="font-weight:600;color:${col}">${s.return>=0?'+':''}${pct}%</span></div><div class="risk-bar-track"><div class="risk-bar-fill" style="width:${barW}%;background:${col}"></div></div></div>`;
+        }).join('')+
+        `<div style="font-size:11px;color:var(--text3);margin-top:8px">Based on your actual holdings · coverage varies by scenario date range</div>`;
+    }else{
+      document.getElementById('rp-stress-content').innerHTML='<div style="color:var(--text3);font-size:12px">Scenario data not available — holdings may predate scenario periods</div>';
+    }
+
+    p._historyLoaded=true;
+    p._riskMetrics={var95,var99,cvar95,annVol,maxDD,sharpe,n};
+    updateAIContext(p);
+
+  }catch(err){
+    console.error('Historical risk error:',err);
+    _showHistoricalUnavailable('Could not fetch historical data: '+err.message);
+    p._historyLoaded=true;
+  }
+}
+
+function _setRiskCard(id,value,sub){
+  const el=document.getElementById(id),sel=document.getElementById(id+'s');
+  if(el) el.textContent=value; if(sel) sel.textContent=sub;
+}
+function _showHistoricalUnavailable(msg){
+  ['rv-var95','rv-var99','rv-cvar','rv-vol','rv-mdd','rv-sharpe'].forEach((id,i)=>{
+    _setRiskCard(id,'—',i===0?msg:'');
+  });
+  if(document.getElementById('rp-stress-content'))
+    document.getElementById('rp-stress-content').innerHTML=`<div style="color:var(--text3);font-size:12px">${msg}</div>`;
+}
+function _closestDateIdx(dates,target){
+  let best=-1,bestDiff=Infinity;
+  dates.forEach((d,i)=>{const diff=Math.abs(d-target);if(diff<bestDiff){bestDiff=diff;best=i;}});
+  return bestDiff<30*86400000?best:-1;
+}
+function _calcRecovery(cumVals,troughIdx){
+  const peak=Math.max(...cumVals.slice(0,troughIdx+1));
+  for(let i=troughIdx+1;i<cumVals.length;i++){if(cumVals[i]>=peak)return i-troughIdx;}
+  return null;
+}
+
+/* ═══ COLLAPSIBLE RISK TOGGLE — fetches history on first open ══════════ */
 function toggleRisk(){
   const body    = document.getElementById('risk-body');
   const chevron = document.getElementById('risk-chevron');
   const isOpen  = body.classList.contains('open');
   body.classList.toggle('open', !isOpen);
   chevron.classList.toggle('open', !isOpen);
+
+  // Fetch historical data on first open for this portfolio
+  if(!isOpen && activePortfolioId){
+    const p = portfolios.find(x=>x.id===activePortfolioId);
+    if(p && !p._historyLoaded) fetchAndBuildHistoricalRisk(p);
+  }
 }
 
 /* ═══ DETAIL HOLDINGS TABLE ════════════════════════════════════════════ */
