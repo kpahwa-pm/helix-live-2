@@ -327,9 +327,17 @@ tr:hover td{background:var(--hover)}
           <div class="page-title" id="d-name"></div>
           <div class="page-sub" id="d-meta"></div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span id="d-data-badge"></span>
           <span id="d-type-badge"></span>
+          <span id="d-price-age" style="font-size:11px;color:var(--text3)"></span>
+          <button onclick="refreshPortfolioPrices()" id="refresh-btn"
+            style="display:flex;align-items:center;gap:5px;padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--card);font-size:12px;color:var(--text2);cursor:pointer;transition:all .15s"
+            onmouseover="this.style.borderColor='var(--blue)';this.style.color='var(--blue)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text2)'">
+            <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Refresh prices
+          </button>
         </div>
       </div>
 
@@ -357,16 +365,6 @@ tr:hover td{background:var(--hover)}
           <div class="var-grid" id="d-var-grid"></div>
 
           <div class="risk-panels" id="d-risk-panels">
-            <!-- Analyst Consensus -->
-            <div class="risk-panel" id="rp-analyst">
-              <div class="risk-panel-title">
-                <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-                Analyst Consensus
-              </div>
-              <div class="risk-panel-sub" id="rp-analyst-sub"></div>
-              <div id="rp-analyst-bars"></div>
-            </div>
-
             <!-- ESG Distribution -->
             <div class="risk-panel" id="rp-esg">
               <div class="risk-panel-title">
@@ -1221,14 +1219,16 @@ function loadPortfolioDetail(id){
   document.getElementById('d-meta').textContent =
     `${p.portfolioType} · ${p.holdings.length} positions · Loaded ${new Date(p.loadedAt).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}`;
 
-  // Badges
+  // Badges + price age message
   const typeColor = p.portfolioType==='Equity'?'badge-blue':p.portfolioType==='Fixed Income'?'badge-green':'badge-amber';
   document.getElementById('d-type-badge').innerHTML =
     `<span class="badge ${typeColor}">${p.portfolioType}</span>`;
   document.getElementById('d-data-badge').innerHTML =
     p.pricingMix === 'live'  ? `<span class="data-live">Live prices</span>` :
-    p.pricingMix === 'file'  ? `<span class="data-age">File data · prices as of upload</span>` :
-                               `<span class="data-age">Mixed · Live + File data</span>`;
+    p.pricingMix === 'file'  ? `<span class="data-age">File data</span>` :
+                               `<span class="data-age">Mixed</span>`;
+  // Price age — how long since last fetch
+  _updatePriceAge(p);
 
   // Summary metrics
   const sorted = [...p.holdings].sort((a,b)=>b.dayPct-a.dayPct);
@@ -1265,6 +1265,81 @@ function loadPortfolioDetail(id){
   nav('detail');
 }
 
+function _updatePriceAge(p){
+  const el = document.getElementById('d-price-age');
+  if(!el) return;
+  if(p.pricingMix === 'file'){
+    el.textContent = 'Prices from uploaded file';
+    return;
+  }
+  const loaded  = new Date(p.loadedAt);
+  const now     = new Date();
+  const diffMs  = now - loaded;
+  const diffMin = Math.floor(diffMs / 60000);
+  const timeStr = loaded.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  if(diffMin < 1)       el.textContent = `Prices as of ${timeStr} · just now`;
+  else if(diffMin < 60) el.textContent = `Prices as of ${timeStr} · ${diffMin} min${diffMin>1?'s':''} ago — refresh for latest`;
+  else {
+    const diffHr = Math.floor(diffMin/60);
+    el.textContent = `Prices as of ${timeStr} · ${diffHr}h ago — refresh for latest`;
+  }
+}
+
+async function refreshPortfolioPrices(){
+  const p = portfolios.find(x=>x.id===activePortfolioId);
+  if(!p) return;
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;display:inline-block"></span> Refreshing…`;
+
+  try{
+    // Re-fetch only Yahoo-priced holdings
+    const yahooHoldings = p.holdings.filter(h=>h.ticker&&h.priceSource==='yahoo');
+    const priceData = {};
+    for(let i=0;i<yahooHoldings.length;i+=10){
+      const batch = yahooHoldings.slice(i,i+10);
+      const res   = await fetch(`${WORKER}/prices?tickers=${encodeURIComponent(batch.map(h=>h.ticker).join(','))}`);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      Object.assign(priceData, await res.json());
+    }
+
+    // Update prices on holdings in place
+    p.holdings.forEach(h=>{
+      if(!h.ticker||h.priceSource!=='yahoo') return;
+      const pd = priceData[h.ticker];
+      if(!pd||!pd.price) return;
+      const prev    = pd.previousClose||0;
+      h.price       = pd.price;
+      h.previousClose = prev;
+      h.dayPnl      = (pd.price-prev)*h.qty;
+      h.dayPct      = prev>0?((pd.price-prev)/prev)*100:0;
+      // Update market value and weight
+      h.marketValue = pd.price*h.qty;
+    });
+
+    // Recalculate totals and weights
+    p.totalMV     = p.holdings.reduce((s,h)=>s+h.marketValue,0);
+    p.totalDayPnl = p.holdings.reduce((s,h)=>s+h.dayPnl,0);
+    p.holdings.forEach(h=>h.weight=p.totalMV>0?(h.marketValue/p.totalMV)*100:0);
+    p.loadedAt    = new Date().toISOString();
+    p._historyLoaded = false; // reset so risk recalculates with fresh data
+
+    // Persist and re-render
+    savePortfolios();
+    activeDetailHoldings = [...p.holdings];
+    loadPortfolioDetail(p.id);
+    updateOverviewScreen();
+    updateAIContext(p);
+
+  }catch(err){
+    console.error('Refresh error:', err);
+    alert('Could not refresh prices: '+err.message);
+  }finally{
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Refresh prices`;
+  }
+}
+
 function buildDetailCharts(holdings, totalMV){
   const sm={};holdings.forEach(h=>{const s=h.sector||'Unknown';sm[s]=(sm[s]||0)+h.marketValue;});
   const sd=Object.entries(sm).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v],i)=>[k,+((v/totalMV)*100).toFixed(1),PALETTE[i]]);
@@ -1295,17 +1370,6 @@ function buildRiskPanels(p){
   // Stress panel placeholder
   document.getElementById('rp-stress-content').innerHTML =
     '<div style="color:var(--text3);font-size:12px;padding:8px 0">Expand risk section to calculate from your portfolio history…</div>';
-
-  // Analyst breakdown (instant)
-  const cats=['Strong Buy','Buy','Hold','Sell','Strong Sell','N/A'];
-  const cols=['#22c55e','#86efac','#f59e0b','#ef4444','#dc2626','#64748b'];
-  const cnts=Object.fromEntries(cats.map(c=>[c,0]));
-  holdings.forEach(h=>{const r=h.analystRating||'N/A';if(cnts[r]!==undefined)cnts[r]++;});
-  document.getElementById('rp-analyst-sub').textContent=`${holdings.length} positions · Yahoo sell-side`;
-  document.getElementById('rp-analyst-bars').innerHTML=cats.filter(c=>cnts[c]>0).map(c=>{
-    const pct=((cnts[c]/holdings.length)*100).toFixed(1);
-    return`<div class="risk-bar-item"><div class="risk-bar-label"><span>${analystBadge(c)} <span style="color:var(--text3);font-size:11px">${cnts[c]}</span></span><span style="font-weight:600">${pct}%</span></div><div class="risk-bar-track"><div class="risk-bar-fill" style="width:${pct}%;background:${cols[cats.indexOf(c)]}"></div></div></div>`;
-  }).join('')||'<div style="color:var(--text3);font-size:12px">No analyst data available</div>';
 
   // ESG (instant)
   const withESG=holdings.filter(h=>h.esgTotal!=null);
