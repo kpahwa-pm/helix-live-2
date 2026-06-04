@@ -207,7 +207,44 @@ tr:hover td{background:var(--hover)}
 .del-btn{width:24px;height:24px;border-radius:50%;border:1px solid var(--border);background:none;cursor:pointer;color:var(--text3);font-size:13px;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
 .del-btn:hover{background:var(--red-light);color:var(--red);border-color:var(--red)}
 
-/* Misc */
+/* ── Sticky header + frozen columns for holdings table ── */
+.holdings-wrap{overflow-x:auto;position:relative;max-height:520px;overflow-y:auto}
+.holdings-wrap table{border-collapse:separate;border-spacing:0;min-width:1400px}
+.holdings-wrap thead th{
+  position:sticky;top:0;z-index:3;
+  background:var(--bg3);
+  border-bottom:1px solid var(--border);
+  white-space:nowrap;
+}
+/* Freeze first two columns — Ticker and Name */
+.holdings-wrap th:nth-child(1),
+.holdings-wrap td:nth-child(1){
+  position:sticky;left:0;z-index:2;
+  background:var(--card);
+  min-width:90px;
+}
+.holdings-wrap th:nth-child(1){z-index:4;background:var(--bg3);}
+.holdings-wrap th:nth-child(2),
+.holdings-wrap td:nth-child(2){
+  position:sticky;left:90px;z-index:2;
+  background:var(--card);
+  min-width:140px;
+}
+.holdings-wrap th:nth-child(2){z-index:4;background:var(--bg3);}
+/* Freeze line shadow */
+.holdings-wrap td:nth-child(2),
+.holdings-wrap th:nth-child(2){
+  box-shadow:2px 0 4px rgba(0,0,0,.08);
+}
+.holdings-wrap tr:hover td:nth-child(1),
+.holdings-wrap tr:hover td:nth-child(2){background:var(--hover);}
+
+/* Vertical stress bars (compact) */
+.stress-vert{display:flex;align-items:flex-end;gap:10px;height:120px;padding:8px 0 0}
+.stress-vert-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0}
+.stress-vert-val{font-size:11px;font-weight:700;white-space:nowrap}
+.stress-vert-bar{width:100%;border-radius:3px 3px 0 0;min-height:4px;transition:height .4s ease}
+.stress-vert-label{font-size:10px;color:var(--text3);text-align:center;line-height:1.3;word-break:break-word}
 .btn{padding:8px 16px;border-radius:7px;font-size:13px;cursor:pointer;border:none;font-weight:500}
 .btn-primary{background:var(--blue);color:#fff}.btn-primary:hover{opacity:.9}
 .btn-sm{padding:5px 12px;font-size:12px}
@@ -412,7 +449,21 @@ tr:hover td{background:var(--hover)}
               <div class="risk-panel-title">
                 <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
                 Liquidity Profile
+                <span style="margin-left:auto;display:flex;align-items:center;gap:6px;font-weight:400;font-size:11px;color:var(--text3)">
+                  Participation rate:
+                  <select id="participation-rate" onchange="onParticipationChange()"
+                    style="font-size:11px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--input);color:var(--text);cursor:pointer">
+                    <option value="0.05">5% — Conservative</option>
+                    <option value="0.10">10% — Cautious</option>
+                    <option value="0.15">15% — Moderate</option>
+                    <option value="0.20" selected>20% — Standard ✓</option>
+                    <option value="0.25">25% — Firm</option>
+                    <option value="0.30">30% — Aggressive</option>
+                  </select>
+                </span>
               </div>
+              <!-- Summary metrics -->
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0" id="rp-liq-summary"></div>
               <div class="risk-panel-sub" id="rp-liq-sub">Days to liquidate at normal market depth</div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px" id="rp-liq-bars"></div>
             </div>
@@ -428,7 +479,7 @@ tr:hover td{background:var(--hover)}
             <input class="search-input" placeholder="Search ticker, name, sector..." oninput="searchDetailHoldings(this.value)" id="detail-search"/>
           </div>
         </div>
-        <div style="overflow-x:auto"><table>
+        <div class="holdings-wrap"><table>
           <thead><tr id="d-holdings-thead">
             <th>Ticker / ISIN</th><th>Name</th><th>Asset Class</th><th>Sector</th><th>Country</th>
             <th>Qty / Par</th><th>Price</th><th>Mkt Value</th><th>Weight</th>
@@ -982,6 +1033,8 @@ async function _process(buf, file){
       country:      pd.country     || p.csvCountry  || '',
       sectorSource: pd.sector ? 'yahoo' : p.csvSector ? 'csv' : p.csvAssetClass ? 'assetclass' : 'unknown',
       exchangeName: pd.exchangeName || '',
+      // Liquidity data
+      avgDailyVolume: pd.averageDailyVolume3Month ?? pd.averageDailyVolume10Day ?? null, // shares/day
       // Bond-specific
       duration:     p.duration,
       coupon:       p.coupon,
@@ -1315,8 +1368,8 @@ async function refreshPortfolioPrices(){
       h.previousClose = prev;
       h.dayPnl      = (pd.price-prev)*h.qty;
       h.dayPct      = prev>0?((pd.price-prev)/prev)*100:0;
-      // Update market value and weight
       h.marketValue = pd.price*h.qty;
+      if(pd.averageDailyVolume3Month) h.avgDailyVolume = pd.averageDailyVolume3Month;
     });
 
     // Recalculate totals and weights
@@ -1431,28 +1484,145 @@ function buildRiskPanels(p){
   buildLiquidityProfile(holdings, totalMV);
 }
 
+  // Liquidity Profile
+  buildLiquidityProfile(holdings, totalMV);
+}
+
+/* ═══ LIQUIDITY ENGINE — ADV-based for equities/ETFs, rating-based for bonds ══
+   Formula: Days to liquidate = Position MV / (Participation Rate × ADV £/$)
+   ADV £/$ = averageDailyVolume3Month (shares) × current price
+   Participation rate: user-controlled dropdown, default 20%
+════════════════════════════════════════════════════════════════════════════ */
+
+// Bond liquidity lookup — days to liquidate by rating (no ADV available)
+const BOND_LIQ_DAYS = {
+  'AAA':5, 'AA+':5, 'AA':5, 'AA-':7,
+  'A+':7,  'A':10,  'A-':10,
+  'BBB+':12,'BBB':14,'BBB-':16,
+  'BB+':20, 'BB':22, 'BB-':25,
+  'B+':28,  'B':30,  'B-':35,
+  'CCC':45, 'default':25,
+};
+
+function _bondLiqDays(h){
+  const r = (h.csvRating||'').toUpperCase().trim();
+  return BOND_LIQ_DAYS[r] ?? BOND_LIQ_DAYS['default'];
+}
+
+function _daysToLiquidate(h, participationRate){
+  const mv = h.marketValue;
+  if(!mv || mv <= 0) return null;
+
+  // Cash — always 0
+  const sector = (h.sector||'').toLowerCase();
+  const ac     = (h.assetClass||'').toLowerCase();
+  if(sector.includes('cash') || ac.includes('cash')) return 0;
+
+  // Individual bond (ISIN only, no ADV) — rating-based
+  const isBond = h.isBond ||
+    sector.includes('fixed') || sector.includes('sovereign') ||
+    sector.includes('bond')  || ac.includes('fixed') || ac.includes('bond');
+
+  if(isBond && !h.avgDailyVolume){
+    return _bondLiqDays(h);
+  }
+
+  // Equity / Bond ETF — ADV based
+  if(h.avgDailyVolume && h.price > 0){
+    const advValue = h.avgDailyVolume * h.price; // convert shares → £/$
+    if(advValue > 0){
+      return mv / (participationRate * advValue);
+    }
+  }
+
+  // Fallback — no ADV data, use conservative rule-based
+  if(isBond) return _bondLiqDays(h);
+  const country = (h.country||'').toLowerCase();
+  if(country.includes('india')||country.includes('china')||country.includes('emerging')) return 5;
+  if(sector.includes('real estate')||sector.includes('alternative')) return 90;
+  return 1; // assume liquid equity
+}
+
+function _liqBucket(days){
+  if(days === null) return null;
+  if(days <= 1)  return '≤ 1 day';
+  if(days <= 7)  return '2–7 days';
+  if(days <= 30) return '8–30 days';
+  return '> 30 days';
+}
+
 function buildLiquidityProfile(holdings, totalMV){
-  const buckets = {'≤ 1 day':0, '2–7 days':0, '8–30 days':0, '> 90 days':0};
-  holdings.forEach(h=>{
-    const s=(h.sector||'').toLowerCase(), c=(h.country||'').toLowerCase(), mv=h.marketValue;
-    if(s.includes('cash')){buckets['≤ 1 day']+=mv;}
-    else if(h.isBond||s.includes('fixed')||s.includes('sovereign')||s.includes('bond')){
-      const r=(h.csvRating||'').toUpperCase();
-      if(r.startsWith('A')||r==='AAA'||r==='AA') buckets['2–7 days']+=mv;
-      else if(r.startsWith('B')&&!r.startsWith('BB')) buckets['8–30 days']+=mv;
-      else buckets['2–7 days']+=mv;
-    }else if(s.includes('real estate')||s.includes('alternative')||s.includes('commodity')){
-      buckets['> 90 days']+=mv;
-    }else if(c.includes('india')||c.includes('china')||c.includes('emerging')){
-      buckets['2–7 days']+=mv;
-    }else{buckets['≤ 1 day']+=mv;}
+  const rateEl = document.getElementById('participation-rate');
+  const rate   = rateEl ? parseFloat(rateEl.value) : 0.20;
+
+  // Calculate days for each holding
+  const withDays = holdings.map(h => ({
+    ...h,
+    liqDays: _daysToLiquidate(h, rate),
+  }));
+
+  // Bucket aggregation
+  const buckets = {'≤ 1 day':0, '2–7 days':0, '8–30 days':0, '> 30 days':0};
+  const colors  = {'≤ 1 day':'var(--green)','2–7 days':'var(--blue)','8–30 days':'var(--amber)','> 30 days':'var(--red)'};
+  withDays.forEach(h => {
+    const b = _liqBucket(h.liqDays);
+    if(b && h.marketValue > 0) buckets[b] += h.marketValue;
   });
-  const colors={'≤ 1 day':'var(--green)','2–7 days':'var(--blue)','8–30 days':'var(--amber)','> 90 days':'var(--red)'};
-  document.getElementById('rp-liq-sub').textContent=`${fmtCcy(totalMV)} portfolio · auto-classified by asset type`;
-  document.getElementById('rp-liq-bars').innerHTML=Object.entries(buckets).map(([label,mv])=>{
-    const pct=totalMV>0?(mv/totalMV)*100:0; if(pct<0.01) return '';
-    return`<div class="risk-bar-item"><div class="risk-bar-label"><span>${label}</span><span style="font-weight:600;color:${colors[label]}">${pct.toFixed(1)}% · ${fmtCcy(mv)}</span></div><div class="risk-bar-track"><div class="risk-bar-fill" style="width:${Math.min(pct,100)}%;background:${colors[label]}"></div></div></div>`;
+
+  // Summary metrics
+  const withKnownDays = withDays.filter(h => h.liqDays !== null && h.marketValue > 0);
+  const wAvgDays = withKnownDays.length
+    ? withKnownDays.reduce((s,h) => s + h.liqDays * (h.marketValue/totalMV), 0)
+    : null;
+  const pct1day    = totalMV > 0 ? (buckets['≤ 1 day'] / totalMV) * 100 : 0;
+  const pctIlliquid = totalMV > 0 ? (buckets['> 30 days'] / totalMV) * 100 : 0;
+
+  const advCoverage = withDays.filter(h=>h.avgDailyVolume&&h.marketValue>0).length;
+  const totalHoldings = holdings.filter(h=>h.marketValue>0).length;
+  const methodNote = advCoverage > 0
+    ? `ADV-based · ${advCoverage}/${totalHoldings} holdings · ${(rate*100).toFixed(0)}% participation`
+    : `Rating-based fallback · ${(rate*100).toFixed(0)}% participation`;
+
+  document.getElementById('rp-liq-sub').textContent =
+    `${fmtCcy(totalMV)} portfolio · ${methodNote}`;
+
+  // Summary cards
+  document.getElementById('rp-liq-summary').innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Avg Days to Liquidate</div>
+      <div style="font-size:20px;font-weight:700;color:var(--text)">${wAvgDays!=null?wAvgDays.toFixed(1):'—'}</div>
+      <div style="font-size:10px;color:var(--text3)">weighted by market value</div>
+    </div>
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Liquidatable in 1 Day</div>
+      <div style="font-size:20px;font-weight:700;color:var(--green)">${pct1day.toFixed(1)}%</div>
+      <div style="font-size:10px;color:var(--text3)">${fmtCcy(buckets['≤ 1 day'])}</div>
+    </div>
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Illiquid (> 30 days)</div>
+      <div style="font-size:20px;font-weight:700;color:${pctIlliquid>15?'var(--red)':pctIlliquid>5?'var(--amber)':'var(--green)'}">${pctIlliquid.toFixed(1)}%</div>
+      <div style="font-size:10px;color:var(--text3)">${fmtCcy(buckets['> 30 days'])}</div>
+    </div>`;
+
+  // Bucket bars
+  document.getElementById('rp-liq-bars').innerHTML = Object.entries(buckets).map(([label, mv]) => {
+    const pct = totalMV > 0 ? (mv / totalMV) * 100 : 0;
+    if(pct < 0.01) return '';
+    return `<div class="risk-bar-item">
+      <div class="risk-bar-label">
+        <span>${label}</span>
+        <span style="font-weight:600;color:${colors[label]}">${pct.toFixed(1)}% · ${fmtCcy(mv)}</span>
+      </div>
+      <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${Math.min(pct,100)}%;background:${colors[label]}"></div></div>
+    </div>`;
   }).join('');
+}
+
+// Called when user changes participation rate dropdown
+function onParticipationChange(){
+  const p = portfolios.find(x => x.id === activePortfolioId);
+  if(!p) return;
+  buildLiquidityProfile(p.holdings, p.totalMV);
 }
 
 /* ═══ HISTORICAL RISK ENGINE ════════════════════════════════════════════ */
@@ -1955,37 +2125,31 @@ function renderStressResults(results, totalMV, targetId){
 
   const maxAbs = Math.max(...results.map(r => Math.abs(r.stressedReturn)));
 
-  el.innerHTML = results.map(r => {
+  // Vertical bars — compact, same style as sidebar Risk screen
+  const bars = results.map(r => {
     const pct    = (r.stressedReturn * 100).toFixed(1);
     const pnlStr = fmtCcy(r.stressedPnL);
-    const barW   = maxAbs > 0 ? Math.round((Math.abs(r.stressedReturn) / maxAbs) * 100) : 0;
-    const col    = r.stressedReturn < 0 ? r.color : 'var(--green)';
-
-    // Top 3 sector contributors
-    const sectorHtml = r.topSectors.map(s =>
-      `<span style="font-size:10px;color:var(--text3)">${s.name} ${fmtPct(s.pct)}</span>`
-    ).join(' · ');
-
-    return `<div class="risk-bar-item" style="margin-bottom:12px">
-      <div class="risk-bar-label">
-        <div>
-          <span style="font-weight:600;font-size:12px;color:var(--text)">${r.short}</span>
-          <span style="font-size:10px;color:var(--text3);margin-left:6px">${r.period}</span>
-        </div>
-        <div style="text-align:right">
-          <span style="font-weight:700;color:${col};font-size:13px">${r.stressedReturn>=0?'+':''}${pct}%</span>
-          <span style="font-size:11px;color:var(--text3);margin-left:4px">${pnlStr}</span>
-        </div>
-      </div>
-      <div class="risk-bar-track" style="height:8px;margin:4px 0">
-        <div class="risk-bar-fill" style="width:${barW}%;background:${col}"></div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${sectorHtml}</div>
+    const col    = r.stressedReturn < 0 ? r.color : '22c55e';
+    const barH   = maxAbs > 0 ? Math.max(Math.round((Math.abs(r.stressedReturn) / maxAbs) * 96), 4) : 4;
+    return `<div class="stress-vert-col" title="${r.name} · ${r.period}&#10;${r.narrative}&#10;${pnlStr}">
+      <div class="stress-vert-val" style="color:#${col}">${r.stressedReturn>=0?'+':''}${pct}%</div>
+      <div class="stress-vert-bar" style="height:${barH}px;background:#${col}"></div>
+      <div class="stress-vert-label">${r.short}</div>
     </div>`;
-  }).join('') +
-  `<div style="font-size:11px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-    Mark-to-market stress · Level 1 · Based on historical index returns · Not a forecast
-  </div>`;
+  }).join('');
+
+  // Top drivers — compact one-liner below bars
+  const topDrivers = results.map(r => {
+    const worst = r.topSectors[0];
+    return worst ? `${r.short}: ${worst.name} (${fmtPct(worst.pct)})` : null;
+  }).filter(Boolean).join(' · ');
+
+  el.innerHTML = `
+    <div class="stress-vert">${bars}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:8px;line-height:1.5">
+      ${topDrivers ? `<span style="font-weight:500;color:var(--text2)">Top drivers:</span> ${topDrivers}<br/>` : ''}
+      Mark-to-market · Level 1 · Historical index returns · Not a forecast
+    </div>`;
 }
 
 // ── Sidebar stress bars — firm-level ──────────────────────────────────
