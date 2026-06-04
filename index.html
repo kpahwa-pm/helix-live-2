@@ -981,7 +981,7 @@ async function _process(buf, file){
     let price, mv, dayPnl, dayPct, priceSource;
 
     switch(p.pricingStrategy){
-      case 'yahoo':
+      case 'yahoo': {
         price       = pd.price || 0;
         mv          = price * p.qty;
         const prev  = pd.previousClose || 0;
@@ -989,6 +989,7 @@ async function _process(buf, file){
         dayPct      = prev > 0 ? ((price - prev) / prev) * 100 : 0;
         priceSource = price > 0 ? 'yahoo' : 'none';
         break;
+      }
       case 'file-mv':
         price       = p.filePrice || (p.qty > 0 ? p.fileMV / p.qty : 0);
         mv          = p.fileMV;
@@ -1479,10 +1480,6 @@ function buildRiskPanels(p){
       </div>
       <div style="font-size:11px;color:var(--text3)">+100bps rate shock → approx ${fmtCcy(parseInt(dv01)*100)} P&L impact</div>`;
   }
-
-  // Liquidity Profile
-  buildLiquidityProfile(holdings, totalMV);
-}
 
   // Liquidity Profile
   buildLiquidityProfile(holdings, totalMV);
