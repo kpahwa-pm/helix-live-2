@@ -2130,9 +2130,9 @@ function renderStressResults(results, totalMV, targetId){
     const col    = r.stressedReturn < 0 ? r.color : '22c55e';
     const barH   = maxAbs > 0 ? Math.max(Math.round((Math.abs(r.stressedReturn) / maxAbs) * 85), 6) : 6;
     return `<div class="stress-vert-col" title="${r.name} · ${r.period}&#10;${r.narrative}&#10;${pnlStr}">
-      <div class="stress-vert-val" style="color:#${col}">${r.stressedReturn>=0?'+':''}${pct}%</div>
+      <div class="stress-vert-val" style="color:${col}">${r.stressedReturn>=0?'+':''}${pct}%</div>
       <div class="stress-vert-bar-wrap">
-        <div class="stress-vert-bar" style="height:${barH}px;background:#${col}"></div>
+        <div class="stress-vert-bar" style="height:${barH}px;background:${col}"></div>
       </div>
       <div class="stress-vert-label">${r.short}</div>
     </div>`;
