@@ -240,11 +240,11 @@ tr:hover td{background:var(--hover)}
 .holdings-wrap tr:hover td:nth-child(2){background:var(--hover);}
 
 /* Vertical stress bars (compact) */
-.stress-vert{display:flex;align-items:flex-end;gap:10px;height:120px;padding:8px 0 0}
-.stress-vert-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0}
-.stress-vert-val{font-size:11px;font-weight:700;white-space:nowrap}
-.stress-vert-bar{width:100%;border-radius:3px 3px 0 0;min-height:4px;transition:height .4s ease}
-.stress-vert-label{font-size:10px;color:var(--text3);text-align:center;line-height:1.3;word-break:break-word}
+.stress-vert{display:flex;align-items:flex-end;gap:10px;height:140px;margin:8px 0 4px}
+.stress-vert-col{display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-width:0;height:100%;justify-content:flex-end}
+.stress-vert-val{font-size:11px;font-weight:700;white-space:nowrap;order:1}
+.stress-vert-bar{width:80%;border-radius:3px 3px 0 0;order:2;flex-shrink:0}
+.stress-vert-label{font-size:10px;color:var(--text3);text-align:center;line-height:1.3;word-break:break-word;order:3}
 .btn{padding:8px 16px;border-radius:7px;font-size:13px;cursor:pointer;border:none;font-weight:500}
 .btn-primary{background:var(--blue);color:#fff}.btn-primary:hover{opacity:.9}
 .btn-sm{padding:5px 12px;font-size:12px}
@@ -2127,10 +2127,10 @@ function renderStressResults(results, totalMV, targetId){
     const pct    = (r.stressedReturn * 100).toFixed(1);
     const pnlStr = fmtCcy(r.stressedPnL);
     const col    = r.stressedReturn < 0 ? r.color : '22c55e';
-    const barH   = maxAbs > 0 ? Math.max(Math.round((Math.abs(r.stressedReturn) / maxAbs) * 96), 4) : 4;
+    const barH   = maxAbs > 0 ? Math.max(Math.round((Math.abs(r.stressedReturn) / maxAbs) * 100), 6) : 6;
     return `<div class="stress-vert-col" title="${r.name} · ${r.period}&#10;${r.narrative}&#10;${pnlStr}">
       <div class="stress-vert-val" style="color:#${col}">${r.stressedReturn>=0?'+':''}${pct}%</div>
-      <div class="stress-vert-bar" style="height:${barH}px;background:#${col}"></div>
+      <div class="stress-vert-bar" style="height:${barH}px;background:#${col};width:70%"></div>
       <div class="stress-vert-label">${r.short}</div>
     </div>`;
   }).join('');
