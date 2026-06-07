@@ -1643,103 +1643,127 @@ function onParticipationChange(){
 
 /* ═══ HISTORICAL RISK ENGINE ════════════════════════════════════════════ */
 async function fetchAndBuildHistoricalRisk(p){
-  // Include any holding with a valid ticker — not just Yahoo-priced ones
-  // File-MV holdings (bonds with Notional Value) still have tickers for history fetch
-  const yahooHoldings=p.holdings.filter(h=>h.ticker&&h.ticker.length>0&&h.marketValue>0);
+
+  // Always render stress scenarios immediately — independent of history fetch
+  const stressResults = calculateStressScenarios(p.holdings, p.totalMV);
+  renderStressResults(stressResults, p.totalMV, 'rp-stress-content');
+
+  // Include any holding with a valid ticker
+  const yahooHoldings = p.holdings.filter(h => h.ticker && h.ticker.length > 0 && h.marketValue > 0);
   if(!yahooHoldings.length){
-    _showHistoricalUnavailable('No live-priced holdings to calculate historical risk');
-    p._historyLoaded=true; return;
+    _showHistoricalUnavailable('No ticker data available for VaR calculation');
+    p._historyLoaded = true; return;
   }
-  // Loading spinners
+
+  // Loading spinners on VaR cards only — stress already rendered above
   ['rv-var95','rv-var99','rv-cvar','rv-vol','rv-mdd','rv-sharpe'].forEach(id=>{
-    const el=document.getElementById(id);
-    if(el) el.innerHTML='<span class="spinner" style="width:16px;height:16px;border-width:2px;display:inline-block"></span>';
+    const el = document.getElementById(id);
+    if(el) el.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px;display:inline-block"></span>';
   });
+
   try{
     // Fetch historical prices in batches of 10
-    const histData={};
-    const tickers=yahooHoldings.map(h=>h.ticker);
-    for(let i=0;i<tickers.length;i+=10){
-      const batch=tickers.slice(i,i+10);
-      const res=await fetch(`${WORKER}/history?tickers=${encodeURIComponent(batch.join(','))}`);
-      if(!res.ok) throw new Error('HTTP '+res.status);
+    const histData = {};
+    const tickers  = yahooHoldings.map(h => h.ticker);
+    for(let i = 0; i < tickers.length; i += 10){
+      const batch = tickers.slice(i, i + 10);
+      const res   = await fetch(`${WORKER}/history?tickers=${encodeURIComponent(batch.join(','))}`);
+      if(!res.ok) throw new Error('HTTP ' + res.status);
       Object.assign(histData, await res.json());
     }
+
     // Use ticker with most data as date backbone
-    const backbone=Object.values(histData).filter(d=>d.dates&&d.dates.length>20).sort((a,b)=>b.dates.length-a.dates.length)[0];
-    if(!backbone){_showHistoricalUnavailable('Insufficient historical data');p._historyLoaded=true;return;}
-
-    const totalYahooMV=yahooHoldings.reduce((s,h)=>s+h.marketValue,0);
-    const portfolioReturns=[];
-
-    for(let i=1;i<backbone.dates.length;i++){
-      const date=backbone.dates[i];
-      let portReturn=0,weightUsed=0;
-      yahooHoldings.forEach(h=>{
-        const hd=histData[h.ticker];
-        if(!hd||!hd.dates||hd.dates.length<2) return;
-        const dateIdx=hd.dates.findIndex(d=>Math.abs(d-date)<86400000);
-        if(dateIdx<1) return;
-        const todayP=hd.prices[dateIdx],prevP=hd.prices[dateIdx-1];
-        if(!todayP||!prevP||prevP===0) return;
-        const w=h.marketValue/totalYahooMV;
-        portReturn+=(todayP-prevP)/prevP*w; weightUsed+=w;
-      });
-      if(weightUsed>0.5) portfolioReturns.push(portReturn);
+    const backbone = Object.values(histData)
+      .filter(d => d.dates && d.dates.length > 20)
+      .sort((a,b) => b.dates.length - a.dates.length)[0];
+    if(!backbone){
+      _showHistoricalUnavailable('Insufficient historical price data for VaR');
+      p._historyLoaded = true; return;
     }
 
-    if(portfolioReturns.length<20){
-      _showHistoricalUnavailable('Not enough data points ('+portfolioReturns.length+' days)');
-      p._historyLoaded=true; return;
+    // Calculate portfolio daily returns
+    // Only use holdings that have history data — weight them relative to each other
+    const holdingsWithHistory = yahooHoldings.filter(h =>
+      histData[h.ticker] && histData[h.ticker].dates && histData[h.ticker].dates.length > 20
+    );
+
+    if(!holdingsWithHistory.length){
+      _showHistoricalUnavailable('No historical price data returned for your holdings');
+      p._historyLoaded = true; return;
+    }
+
+    // Recalculate weights relative to holdings that have history
+    const totalHistMV = holdingsWithHistory.reduce((s,h) => s + h.marketValue, 0);
+    const portfolioReturns = [];
+
+    for(let i = 1; i < backbone.dates.length; i++){
+      const date = backbone.dates[i];
+      let portReturn = 0, weightUsed = 0;
+
+      holdingsWithHistory.forEach(h => {
+        const hd = histData[h.ticker];
+        if(!hd || !hd.dates) return;
+        const dateIdx = hd.dates.findIndex(d => Math.abs(d - date) < 86400000);
+        if(dateIdx < 1) return;
+        const todayP = hd.prices[dateIdx], prevP = hd.prices[dateIdx - 1];
+        if(!todayP || !prevP || prevP === 0) return;
+        const w = h.marketValue / totalHistMV;
+        portReturn  += (todayP - prevP) / prevP * w;
+        weightUsed  += w;
+      });
+
+      // Lower threshold — accept days where at least 20% of tracked holdings have data
+      if(weightUsed > 0.2) portfolioReturns.push(portReturn);
+    }
+
+    if(portfolioReturns.length < 20){
+      _showHistoricalUnavailable(`Not enough data points (${portfolioReturns.length} days) · Try refreshing prices`);
+      p._historyLoaded = true; return;
     }
 
     // ── All metrics from return series ──
-    const sorted=[...portfolioReturns].sort((a,b)=>a-b);
-    const n=sorted.length;
-    const var95idx=Math.floor(n*0.05), var99idx=Math.floor(n*0.01);
-    const var95=-sorted[var95idx], var99=-sorted[var99idx];
-    const tail95=sorted.slice(0,var95idx+1);
-    const cvar95=-(tail95.reduce((s,r)=>s+r,0)/tail95.length);
-    const mean=portfolioReturns.reduce((s,r)=>s+r,0)/n;
-    const dailyVol=Math.sqrt(portfolioReturns.reduce((s,r)=>s+Math.pow(r-mean,2),0)/n);
-    const annVol=dailyVol*Math.sqrt(252);
+    const sorted = [...portfolioReturns].sort((a,b) => a - b);
+    const n      = sorted.length;
+    const var95idx = Math.floor(n * 0.05), var99idx = Math.floor(n * 0.01);
+    const var95    = -sorted[var95idx], var99 = -sorted[var99idx];
+    const tail95   = sorted.slice(0, var95idx + 1);
+    const cvar95   = -(tail95.reduce((s,r) => s+r, 0) / tail95.length);
+    const mean     = portfolioReturns.reduce((s,r) => s+r, 0) / n;
+    const dailyVol = Math.sqrt(portfolioReturns.reduce((s,r) => s + Math.pow(r-mean,2), 0) / n);
+    const annVol   = dailyVol * Math.sqrt(252);
+
     // Max drawdown
-    let peak=1,maxDD=0,drawdownStart=0,maxDDStart=0,maxDDEnd=0,cumVal=1;
-    const cumVals=[1];
-    portfolioReturns.forEach((r,i)=>{
-      cumVal*=(1+r); cumVals.push(cumVal);
-      if(cumVal>peak){peak=cumVal;drawdownStart=i+1;}
-      const dd=(peak-cumVal)/peak;
-      if(dd>maxDD){maxDD=dd;maxDDStart=drawdownStart;maxDDEnd=i+1;}
+    let peak = 1, maxDD = 0, drawdownStart = 0, maxDDEnd = 0, cumVal = 1;
+    const cumVals = [1];
+    portfolioReturns.forEach((r,i) => {
+      cumVal *= (1+r); cumVals.push(cumVal);
+      if(cumVal > peak){ peak = cumVal; drawdownStart = i+1; }
+      const dd = (peak - cumVal) / peak;
+      if(dd > maxDD){ maxDD = dd; maxDDEnd = i+1; }
     });
-    const recoveryDays=_calcRecovery(cumVals,maxDDEnd);
-    const annReturn=Math.pow(1+mean,252)-1;
-    const sharpe=annVol>0?(annReturn-0.05)/annVol:null;
+    const recoveryDays = _calcRecovery(cumVals, maxDDEnd);
+    const annReturn    = Math.pow(1 + mean, 252) - 1;
+    const sharpe       = annVol > 0 ? (annReturn - 0.05) / annVol : null;
 
-    // ── Render metrics ──
-    const totalMV=p.totalMV;
-    _setRiskCard('rv-var95',(var95*100).toFixed(2)+'%', fmtCcy(totalMV*var95)+' at risk · '+n+' day sample');
-    _setRiskCard('rv-var99',(var99*100).toFixed(2)+'%', fmtCcy(totalMV*var99)+' at risk · historical sim');
-    _setRiskCard('rv-cvar', (cvar95*100).toFixed(2)+'%','Avg loss beyond VaR threshold');
-    _setRiskCard('rv-vol',  (annVol*100).toFixed(2)+'%', dailyVol<0.01?'Low volatility':dailyVol<0.02?'Moderate':'High volatility');
-    _setRiskCard('rv-mdd',  '-'+(maxDD*100).toFixed(2)+'%', recoveryDays?'Recovery: ~'+recoveryDays+' days':'Not yet recovered in sample');
-    _setRiskCard('rv-sharpe', sharpe!=null?sharpe.toFixed(2):'—', sharpe>1?'Strong risk-adjusted return':sharpe>0?'Positive':sharpe!=null?'Below risk-free rate':'N/A');
+    // ── Render VaR metrics ──
+    const totalMV = p.totalMV;
+    const covNote = holdingsWithHistory.length < yahooHoldings.length
+      ? ` · ${holdingsWithHistory.length}/${yahooHoldings.length} holdings` : '';
+    _setRiskCard('rv-var95',  (var95*100).toFixed(2)+'%',  fmtCcy(totalMV*var95)+' at risk · '+n+' days'+covNote);
+    _setRiskCard('rv-var99',  (var99*100).toFixed(2)+'%',  fmtCcy(totalMV*var99)+' at risk · historical sim');
+    _setRiskCard('rv-cvar',   (cvar95*100).toFixed(2)+'%', 'Avg loss beyond VaR threshold');
+    _setRiskCard('rv-vol',    (annVol*100).toFixed(2)+'%', dailyVol<0.01?'Low volatility':dailyVol<0.02?'Moderate':'High volatility');
+    _setRiskCard('rv-mdd',    '-'+(maxDD*100).toFixed(2)+'%', recoveryDays?'Recovery: ~'+recoveryDays+' days':'Not yet recovered in sample');
+    _setRiskCard('rv-sharpe', sharpe!=null?sharpe.toFixed(2):'—', sharpe>1?'Strong risk-adj return':sharpe>0?'Positive':sharpe!=null?'Below risk-free rate':'N/A');
 
-    // ── Stress scenarios — factor-based (works for all asset classes) ──
-    const stressResults = calculateStressScenarios(p.holdings, p.totalMV);
-    renderStressResults(stressResults, p.totalMV, 'rp-stress-content');
-
-    p._historyLoaded=true;
-    p._riskMetrics={var95,var99,cvar95,annVol,maxDD,sharpe,n};
+    p._historyLoaded  = true;
+    p._riskMetrics    = { var95, var99, cvar95, annVol, maxDD, sharpe, n };
     updateAIContext(p);
 
   }catch(err){
-    console.error('Historical risk error:',err);
-    // Even if historical fetch fails, still show factor-based stress
-    const stressResults = calculateStressScenarios(p.holdings, p.totalMV);
-    renderStressResults(stressResults, p.totalMV, 'rp-stress-content');
-    _showHistoricalUnavailable('Could not fetch historical price data for VaR — stress scenarios calculated from factor model');
-    p._historyLoaded=true;
+    console.error('Historical risk error:', err);
+    _showHistoricalUnavailable('Could not fetch historical data: ' + err.message);
+    p._historyLoaded = true;
   }
 }
 
