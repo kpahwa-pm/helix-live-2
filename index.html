@@ -584,39 +584,127 @@ tr:hover td{background:var(--hover)}
     <!-- ═══════ COMPLIANCE ═══════ -->
     <div class="screen" id="screen-compliance">
       <div class="page-title">Compliance</div>
-      <div class="page-sub">Exception monitoring · Mandate limits · Breach reporting</div>
-      <div class="metric-grid">
-        <div class="metric-card bt-red"><div class="metric-label">Open Exceptions</div><div class="metric-value down">23</div><div class="metric-sub">Requires action</div></div>
-        <div class="metric-card bt-amber"><div class="metric-label">Pending Review</div><div class="metric-value neutral">8</div><div class="metric-sub">Awaiting sign-off</div></div>
-        <div class="metric-card bt-green"><div class="metric-label">Resolved Today</div><div class="metric-value up">12</div><div class="metric-sub">Closed exceptions</div></div>
-        <div class="metric-card bt-blue"><div class="metric-label">Breach Rate</div><div class="metric-value">1.8%</div><div class="metric-sub up">↓ 0.3% vs last month</div></div>
+      <div class="page-sub">Mandate monitoring · Rule checking · Breach reporting</div>
+
+      <!-- Summary metrics -->
+      <div class="metric-grid" id="compliance-metrics">
+        <div class="metric-card bt-red"><div class="metric-label">Open Breaches</div><div class="metric-value down" id="cm-breaches">—</div><div class="metric-sub">Across all portfolios</div></div>
+        <div class="metric-card bt-amber"><div class="metric-label">Warnings</div><div class="metric-value neutral" id="cm-warnings">—</div><div class="metric-sub">Within 10% of limit</div></div>
+        <div class="metric-card bt-green"><div class="metric-label">Rules Passing</div><div class="metric-value up" id="cm-passing">—</div><div class="metric-sub">All checks</div></div>
+        <div class="metric-card bt-blue"><div class="metric-label">Portfolios Checked</div><div class="metric-value" id="cm-portfolios">—</div><div class="metric-sub" id="cm-last-check">Not yet run</div></div>
       </div>
-      <div class="card" style="padding:32px;text-align:center;margin-bottom:20px">
-        <div style="font-size:36px;margin-bottom:12px">📋</div>
-        <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px">Exception Report Agent</div>
-        <div style="font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.7;max-width:500px;margin-left:auto;margin-right:auto">Generate AI-powered compliance reports instantly.</div>
-        <button class="btn btn-primary" onclick="nav('ai');setTimeout(()=>{document.getElementById('ai-input').value='Compliance summary — which portfolios have the most exceptions and key risks to act on today?';aiSend();},300)">Ask Helix about Compliance →</button>
+
+      <!-- Mandate settings -->
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header">
+          <div><div class="card-title">Mandate Settings</div><div class="card-sub">Your firm-wide compliance limits — applied to all portfolios</div></div>
+          <button class="btn btn-primary btn-sm" onclick="saveAndRunCompliance()">Save & Run Check</button>
+        </div>
+        <div style="padding:16px 20px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px" id="mandate-settings">
+          <div>
+            <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:6px">Single Stock Limit</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="ms-single-stock" value="5" min="1" max="100" step="0.5"
+                style="width:70px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--text);font-size:13px"/>
+              <span style="font-size:13px;color:var(--text2)">% of NAV</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">Max single holding weight</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:6px">Single Sector Limit</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="ms-sector" value="30" min="1" max="100" step="1"
+                style="width:70px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--text);font-size:13px"/>
+              <span style="font-size:13px;color:var(--text2)">% of NAV</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">Max single sector exposure</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:6px">Single Country Limit</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="ms-country" value="40" min="1" max="100" step="1"
+                style="width:70px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--text);font-size:13px"/>
+              <span style="font-size:13px;color:var(--text2)">% of NAV</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">Max single country exposure</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:6px">Min Liquidity (1 Day)</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="ms-liquidity" value="70" min="0" max="100" step="5"
+                style="width:70px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--text);font-size:13px"/>
+              <span style="font-size:13px;color:var(--text2)">% of NAV</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">SEC Rule 22e-4 min 70%</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:6px">Max Illiquid (&gt;30 days)</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="ms-illiquid" value="15" min="0" max="100" step="1"
+                style="width:70px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--text);font-size:13px"/>
+              <span style="font-size:13px;color:var(--text2)">% of NAV</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">SEC Rule 22e-4 max 15%</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-bottom:6px">Max Cash</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="ms-cash" value="10" min="0" max="100" step="1"
+                style="width:70px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--input);color:var(--text);font-size:13px"/>
+              <span style="font-size:13px;color:var(--text2)">% of NAV</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">Max cash &amp; equivalents</div>
+          </div>
+        </div>
+        <div style="padding:0 20px 14px;font-size:11px;color:var(--text3)">
+          ⚖️ Regulatory floor: SEC Rule 22e-4 · UCITS 5/10/40 · Standard industry limits also applied automatically
+        </div>
       </div>
-      <div class="card">
-        <div class="card-header"><div class="card-title">Recent Exceptions</div><div class="card-sub">Last 7 days</div></div>
-        <div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Portfolio</th><th>Rule</th><th>Breach %</th><th>Status</th><th>Assignee</th><th>Date</th></tr></thead><tbody>
-          <tr><td>#EX-2291</td><td>FIC-007</td><td>Duration limit</td><td><span class="down" style="font-weight:600">112%</span></td><td><span class="badge badge-red">Open</span></td><td>Priya N.</td><td>11 May</td></tr>
-          <tr><td>#EX-2289</td><td>GMA-001</td><td>Tech concentration</td><td><span class="neutral" style="font-weight:600">89%</span></td><td><span class="badge badge-amber">Pending</span></td><td>Helena P.</td><td>10 May</td></tr>
-          <tr><td>#EX-2284</td><td>EQL-014</td><td>Single stock limit</td><td><span class="down" style="font-weight:600">134%</span></td><td><span class="badge badge-red">Open</span></td><td>Marcus C.</td><td>09 May</td></tr>
-          <tr><td>#EX-2280</td><td>MAC-003</td><td>FX exposure</td><td><span class="up" style="font-weight:600">45%</span></td><td><span class="badge badge-green">Closed</span></td><td>James W.</td><td>08 May</td></tr>
-          <tr><td>#EX-2278</td><td>GMA-001</td><td>Liquidity bucket</td><td><span class="neutral" style="font-weight:600">76%</span></td><td><span class="badge badge-amber">Pending</span></td><td>Helena P.</td><td>07 May</td></tr>
-        </tbody></table></div>
+
+      <!-- Compliance check results — all portfolios -->
+      <div id="compliance-results">
+        <div style="text-align:center;padding:40px;color:var(--text3)">
+          <div style="font-size:32px;margin-bottom:12px">⚖️</div>
+          <div style="font-size:15px;font-weight:600;color:var(--text2);margin-bottom:6px">No compliance check run yet</div>
+          <div style="font-size:13px;margin-bottom:16px">Upload portfolios and click "Save & Run Check" to see compliance results across all portfolios</div>
+          <button class="btn btn-primary" onclick="saveAndRunCompliance()">Run Compliance Check</button>
+        </div>
       </div>
     </div>
 
     <!-- ═══════ AI INSIGHTS ═══════ -->
     <div class="screen" id="screen-ai">
       <div class="page-title">AI Insights</div>
-      <div class="page-sub">Natural-language analytics across all your portfolios
+      <div class="page-sub">Natural-language analytics · Compliance Q&A · Document-grounded answers
         <span style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--green)">
           <span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 2s ease-in-out infinite"></span>Model online
         </span>
       </div>
+
+      <!-- ── Knowledge Base ── -->
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:32px;height:32px;background:var(--purple);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px">📚</div>
+            <div>
+              <div class="card-title">Knowledge Base</div>
+              <div class="card-sub" id="kb-sub">Upload fund prospectuses, mandate documents, compliance rules — Ask Helix will use them to answer questions</div>
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;padding:6px 14px;background:var(--purple);color:#fff;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer">
+            <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Add Document
+            <input type="file" accept=".pdf,.txt,.doc,.docx" style="display:none" onchange="handleDocUpload(this)"/>
+          </label>
+        </div>
+        <div id="kb-docs-list" style="padding:0 20px 12px">
+          <div id="kb-empty" style="padding:16px 0;color:var(--text3);font-size:13px;text-align:center">
+            No documents uploaded yet. Add fund prospectuses or mandate documents to enhance AI responses.
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Ask Helix ── -->
       <div class="card" style="margin-bottom:20px">
         <div class="card-header">
           <div style="display:flex;align-items:center;gap:10px">
@@ -628,10 +716,12 @@ tr:hover td{background:var(--hover)}
           <div class="chips-row">
             <button class="chip" onclick="aiAsk(this.textContent)">What's my biggest concentration risk?</button>
             <button class="chip" onclick="aiAsk(this.textContent)">Which holdings have a Sell or Strong Sell rating?</button>
-            <button class="chip" onclick="aiAsk(this.textContent)">Analyse my ESG exposure</button>
+            <button class="chip" onclick="aiAsk(this.textContent)">Am I breaching any mandate limits?</button>
             <button class="chip" onclick="aiAsk(this.textContent)">What's my aggregate portfolio beta?</button>
             <button class="chip" onclick="aiAsk(this.textContent)">Which positions are most expensive on P/E?</button>
             <button class="chip" onclick="aiAsk(this.textContent)">Top 3 risks across all my portfolios?</button>
+            <button class="chip" onclick="aiAsk(this.textContent)">Check compliance across all portfolios</button>
+            <button class="chip" onclick="aiAsk(this.textContent)">Which portfolio is closest to breaching a limit?</button>
           </div>
           <div class="ai-chat">
             <div class="ai-messages" id="ai-messages">
@@ -639,16 +729,17 @@ tr:hover td{background:var(--hover)}
                 <div class="ai-label">✦ Helix</div>
                 <div class="ai-bubble">Hello! I'm Helix — your AI portfolio analyst.
 
-Upload one or more portfolios on the Upload screen and I'll have full visibility across all of them — positions, Helix quant scores, analyst ratings, ESG, sectors, countries. Ask me anything.</div>
+Upload portfolios and I'll have full visibility across all of them. Add mandate documents to the Knowledge Base above and I can check compliance, flag breaches, and answer questions about your specific fund rules.</div>
               </div>
             </div>
             <div class="ai-input-row">
-              <input class="ai-input" id="ai-input" placeholder="Ask anything about your portfolios..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();aiSend();}"/>
+              <input class="ai-input" id="ai-input" placeholder="Ask anything about your portfolios or compliance rules..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();aiSend();}"/>
               <button class="ai-send" id="ai-send-btn" onclick="aiSend()">Send ↗</button>
             </div>
           </div>
         </div>
       </div>
+
       <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:12px">Today's signals</div>
       <div class="signals-grid" id="signals-grid"></div>
     </div>
@@ -876,7 +967,20 @@ async function _process(buf, file){
   // Asset Class — separate from sector (Equity / Fixed Income / Cash etc.)
   const acCol  = findPriority(['assetclass','assettype'],['type','class']);
   // Other enrichment
-  const cCol   = find('country','location','domicile','region','geography','market','exchange');
+  // Country — validate it actually contains text not numbers
+  const _cColRaw = find('country','location','domicile','region','geography');
+  // Reject if >50% of values are numeric — means we picked up wrong column
+  const cCol = (() => {
+    if(!_cColRaw) return null;
+    const sample = raw.slice(0,10).map(r => String(r[_cColRaw]||'').trim());
+    const numericCount = sample.filter(v => v && !isNaN(v.replace(/,/g,''))).length;
+    const nonEmpty = sample.filter(v => v).length;
+    if(nonEmpty > 0 && numericCount / nonEmpty > 0.5){
+      console.log('Country column rejected (numeric values):', _cColRaw);
+      return null;
+    }
+    return _cColRaw;
+  })();
   const iCol   = find('industry');
   const ratCol = find('rating','creditrating','moodys','snp','fitch');
   const durCol = find('duration','modifiedduration');
@@ -1229,9 +1333,10 @@ function buildFirmCharts(){
   // Sector
   const sm={};allH.forEach(h=>{const s=h.sector||'Unknown';sm[s]=(sm[s]||0)+h.marketValue;});
   const sd=Object.entries(sm).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v],i)=>[k,+((v/totalMV)*100).toFixed(1),PALETTE[i]]);
-  // Type mix
-  const tm={};portfolios.forEach(p=>{tm[p.portfolioType]=(tm[p.portfolioType]||0)+p.totalMV;});
-  const td=Object.entries(tm).map(([k,v],i)=>[k,+((v/totalMV)*100).toFixed(1),PALETTE[i]]);
+  // Type mix — by portfolio count (more meaningful when portfolio sizes vary widely)
+  const tm={};portfolios.forEach(p=>{tm[p.portfolioType]=(tm[p.portfolioType]||0)+1;});
+  const totalCount = portfolios.length;
+  const td=Object.entries(tm).map(([k,v],i)=>[`${k} (${v})`, +((v/totalCount)*100).toFixed(1), PALETTE[i]]);
   // Country
   const cm={};allH.forEach(h=>{const c=h.country||'Unknown';cm[c]=(cm[c]||0)+h.marketValue;});
   const cd=Object.entries(cm).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v],i)=>[k,+((v/totalMV)*100).toFixed(1),PALETTE[i]]);
@@ -1926,12 +2031,23 @@ TOP ${top15.length} HOLDINGS ACROSS ALL PORTFOLIOS:
 ${top15.map(h=>`${h.ticker} (${h._portfolioName}): ${fmtCcy(h.marketValue)} | ${h.weight?.toFixed(1)}% wt | Day ${fmtPct(h.dayPct)} | Yahoo: ${h.analystRating} | Helix: ${h.helixScore!=null?h.helixScore+'/100→'+h.helixRating:'N/A'} | ESG: ${h.esgTotal?.toFixed(1)||'N/A'} | Beta: ${h.beta?.toFixed(2)||'N/A'} | P/E: ${h.peRatio?.toFixed(1)||'N/A'}x | ${h.sector} | ${h.country}`).join('\n')}
 
 HELIX QUANT METHODOLOGY: Score 0-100 across Valuation 30% · Growth 25% · Quality 25% · Momentum 20%. 78+=Strong Buy · 62+=Buy · 44+=Hold · 28+=Sell. Bonds/ETFs/Cash show N/A.
-Be precise, data-driven, actionable. Reference portfolios, tickers and numbers. Explain Yahoo vs Helix divergences.`;
+Be precise, data-driven, actionable. Reference portfolios, tickers and numbers. Explain Yahoo vs Helix divergences.${
+  // Mandate settings
+  (() => {
+    const s = loadMandateSettings();
+    return `\n\nMANDATE LIMITS (user-configured):\n- Single stock max: ${s.singleStock}% of NAV\n- Single sector max: ${s.sector}% of NAV\n- Single country max: ${s.country}% of NAV\n- Min liquidity (1-day): ${s.liquidity}% of NAV\n- Max illiquid (>30 days): ${s.illiquid}% of NAV — SEC Rule 22e-4\n- Max cash: ${s.cash}% of NAV\n\nREGULATORY RULES (always apply):\n- SEC Rule 22e-4: Illiquid assets ≤ 15% of NAV\n- UCITS 5/10/40: Single issuer ≤ 10%, issuers >5% collectively ≤ 40%\n- Standard: Single stock ≤ 10% (typical institutional limit)`;
+  })()
+}${
+  // Knowledge base documents
+  kbDocs.length > 0 ? '\n\nKNOWLEDGE BASE DOCUMENTS:\n' + kbDocs.map(d =>
+    `--- Document: ${d.fileName} ---\n${d.text.slice(0, 3000)}${d.text.length > 3000 ? '\n[truncated — ' + (d.text.length/1000).toFixed(0) + 'K chars total]' : ''}`
+  ).join('\n\n') : ''
+}`;
 
   document.getElementById('ai-card-sub').textContent =
     focusPortfolio
       ? `Analysing ${focusPortfolio.displayName} · ${focusPortfolio.holdings.length} positions`
-      : `${portfolios.length} portfolio${portfolios.length>1?'s':''} · ${fmtCcy(totalAUM)} total AUM`;
+      : `${portfolios.length} portfolio${portfolios.length>1?'s':''} · ${fmtCcy(totalAUM)} total AUM${kbDocs.length>0?' · '+kbDocs.length+' KB doc'+(kbDocs.length>1?'s':''):''}`;
 }
 
 function aiAsk(text){document.getElementById('ai-input').value=text;aiSend();}
@@ -2254,6 +2370,350 @@ function renderFirmStressBars(){
 renderFirmStressBars();
 
 
+/* ═══ DOCUMENT STORE (Knowledge Base) ══════════════════════════════════
+   Stores uploaded mandate/prospectus documents in localStorage.
+   Text extracted client-side, stored as { id, fileName, text, uploadedAt }
+   All documents injected into AI context at query time.
+════════════════════════════════════════════════════════════════════════ */
+const DOC_STORE_KEY     = 'helix_kb_docs_v1';
+const MANDATE_KEY       = 'helix_mandate_settings_v1';
+let kbDocs = [];
+
+function loadKbDocs(){
+  try{ kbDocs = JSON.parse(localStorage.getItem(DOC_STORE_KEY)||'[]'); }
+  catch(e){ kbDocs = []; }
+}
+function saveKbDocs(){
+  try{ localStorage.setItem(DOC_STORE_KEY, JSON.stringify(kbDocs)); }
+  catch(e){ console.error('KB save error:', e); }
+}
+
+// Handle document upload from AI screen
+async function handleDocUpload(input){
+  const file = input.files[0];
+  if(!file) return;
+  input.value = ''; // reset so same file can be re-uploaded
+
+  const subEl = document.getElementById('kb-sub');
+  subEl.textContent = `Reading ${file.name}…`;
+
+  try{
+    let text = '';
+    if(file.type === 'application/pdf' || file.name.endsWith('.pdf')){
+      // PDF — read as text via FileReader (basic extraction)
+      text = await _extractPdfText(file);
+    } else {
+      // Plain text / txt / doc
+      text = await new Promise((res,rej)=>{
+        const r = new FileReader();
+        r.onload = e => res(e.target.result);
+        r.onerror = rej;
+        r.readAsText(file);
+      });
+    }
+
+    if(!text || text.trim().length < 50){
+      alert('Could not extract text from this file. Try a .txt file or a text-based PDF.');
+      subEl.textContent = 'Upload fund prospectuses, mandate documents, compliance rules';
+      return;
+    }
+
+    // Store document
+    const doc = {
+      id:         'doc-' + Date.now(),
+      fileName:   file.name,
+      text:       text.trim(),
+      uploadedAt: new Date().toISOString(),
+      charCount:  text.trim().length,
+    };
+    kbDocs.push(doc);
+    saveKbDocs();
+    renderKbDocs();
+    updateAIContext();
+    subEl.textContent = `${kbDocs.length} document${kbDocs.length>1?'s':''} in knowledge base`;
+
+  }catch(err){
+    console.error('Doc upload error:', err);
+    alert('Error reading document: ' + err.message);
+    subEl.textContent = 'Upload fund prospectuses, mandate documents, compliance rules';
+  }
+}
+
+async function _extractPdfText(file){
+  // Simple PDF text extraction — reads raw text content
+  // For a proper implementation, pdf.js would be used
+  // This works for text-based PDFs
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = e => {
+      const bytes = new Uint8Array(e.target.result);
+      let text = '';
+      // Extract readable ASCII text from PDF binary
+      for(let i = 0; i < bytes.length - 1; i++){
+        const c = bytes[i];
+        if(c >= 32 && c < 127) text += String.fromCharCode(c);
+        else if(c === 10 || c === 13) text += '\n';
+      }
+      // Clean up — remove repeated spaces and short fragments
+      text = text.replace(/\s{3,}/g, ' ').replace(/[^\x20-\x7E\n]/g, '').trim();
+      res(text.length > 100 ? text : '');
+    };
+    r.onerror = rej;
+    r.readAsArrayBuffer(file);
+  });
+}
+
+function deleteKbDoc(id){
+  kbDocs = kbDocs.filter(d => d.id !== id);
+  saveKbDocs();
+  renderKbDocs();
+  updateAIContext();
+  const subEl = document.getElementById('kb-sub');
+  if(subEl) subEl.textContent = kbDocs.length > 0
+    ? `${kbDocs.length} document${kbDocs.length>1?'s':''} in knowledge base`
+    : 'Upload fund prospectuses, mandate documents, compliance rules';
+}
+
+function renderKbDocs(){
+  const list = document.getElementById('kb-docs-list');
+  const empty = document.getElementById('kb-empty');
+  if(!list) return;
+  if(!kbDocs.length){
+    if(empty) empty.style.display = 'block';
+    // Remove any existing doc items
+    list.querySelectorAll('.kb-doc-item').forEach(el => el.remove());
+    return;
+  }
+  if(empty) empty.style.display = 'none';
+  // Remove existing items and re-render
+  list.querySelectorAll('.kb-doc-item').forEach(el => el.remove());
+  kbDocs.forEach(doc => {
+    const div = document.createElement('div');
+    div.className = 'kb-doc-item';
+    div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)';
+    div.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:32px;height:32px;background:var(--purple-light,rgba(109,40,217,.12));border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">📄</div>
+        <div>
+          <div style="font-size:13px;font-weight:600;color:var(--text)">${doc.fileName}</div>
+          <div style="font-size:11px;color:var(--text3)">${(doc.charCount/1000).toFixed(1)}K chars · Added ${new Date(doc.uploadedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+        </div>
+      </div>
+      <button onclick="deleteKbDoc('${doc.id}')" class="del-btn" title="Remove document">×</button>`;
+    list.appendChild(div);
+  });
+}
+
+/* ═══ MANDATE SETTINGS ══════════════════════════════════════════════════ */
+const DEFAULT_MANDATE = {
+  singleStock: 5,
+  sector:      30,
+  country:     40,
+  liquidity:   70,
+  illiquid:    15,
+  cash:        10,
+};
+
+function loadMandateSettings(){
+  try{
+    const saved = JSON.parse(localStorage.getItem(MANDATE_KEY)||'null');
+    return saved || DEFAULT_MANDATE;
+  }catch(e){ return DEFAULT_MANDATE; }
+}
+
+function saveMandateSettings(){
+  const settings = {
+    singleStock: parseFloat(document.getElementById('ms-single-stock')?.value||5),
+    sector:      parseFloat(document.getElementById('ms-sector')?.value||30),
+    country:     parseFloat(document.getElementById('ms-country')?.value||40),
+    liquidity:   parseFloat(document.getElementById('ms-liquidity')?.value||70),
+    illiquid:    parseFloat(document.getElementById('ms-illiquid')?.value||15),
+    cash:        parseFloat(document.getElementById('ms-cash')?.value||10),
+  };
+  localStorage.setItem(MANDATE_KEY, JSON.stringify(settings));
+  return settings;
+}
+
+function initMandateSettings(){
+  const s = loadMandateSettings();
+  const set = (id, val) => { const el = document.getElementById(id); if(el) el.value = val; };
+  set('ms-single-stock', s.singleStock);
+  set('ms-sector',       s.sector);
+  set('ms-country',      s.country);
+  set('ms-liquidity',    s.liquidity);
+  set('ms-illiquid',     s.illiquid);
+  set('ms-cash',         s.cash);
+}
+
+/* ═══ COMPLIANCE ENGINE ═════════════════════════════════════════════════
+   Checks each portfolio against:
+   1. User mandate settings (configurable limits)
+   2. Hardcoded regulatory rules (SEC 22e-4, UCITS)
+   3. Uploaded knowledge base documents (via AI)
+════════════════════════════════════════════════════════════════════════ */
+
+function saveAndRunCompliance(){
+  const settings = saveMandateSettings();
+  runComplianceCheck(settings);
+}
+
+function runComplianceCheck(settings){
+  if(!portfolios.length){
+    document.getElementById('compliance-results').innerHTML =
+      '<div style="text-align:center;padding:30px;color:var(--text3)">Upload portfolios first to run compliance check.</div>';
+    return;
+  }
+
+  const allResults = portfolios.map(p => checkPortfolioCompliance(p, settings));
+
+  // Update summary metrics
+  const totalBreaches = allResults.reduce((s,r) => s + r.breaches.length, 0);
+  const totalWarnings = allResults.reduce((s,r) => s + r.warnings.length, 0);
+  const totalPassing  = allResults.reduce((s,r) => s + r.passing.length, 0);
+  document.getElementById('cm-breaches').textContent   = totalBreaches;
+  document.getElementById('cm-warnings').textContent   = totalWarnings;
+  document.getElementById('cm-passing').textContent    = totalPassing;
+  document.getElementById('cm-portfolios').textContent = portfolios.length;
+  document.getElementById('cm-last-check').textContent = 'Last checked: ' + new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+
+  // Render results
+  document.getElementById('compliance-results').innerHTML = allResults.map(r => renderComplianceCard(r)).join('');
+
+  // Update AI context with compliance results
+  updateAIContext();
+}
+
+function checkPortfolioCompliance(p, settings){
+  const holdings  = p.holdings;
+  const totalMV   = p.totalMV;
+  const breaches  = [];
+  const warnings  = [];
+  const passing   = [];
+
+  function check(rule, current, limit, isMin=false, format='pct'){
+    const fmt = v => format==='pct' ? v.toFixed(1)+'%' : fmtCcy(v);
+    const breached = isMin ? current < limit : current > limit;
+    const warningThreshold = isMin ? limit * 1.1 : limit * 0.9;
+    const nearBreach = isMin ? (current < warningThreshold && !breached) : (current > warningThreshold && !breached);
+    const item = { rule, current: fmt(current), limit: fmt(limit), isMin };
+    if(breached){
+      const breachBy = isMin ? limit - current : current - limit;
+      breaches.push({ ...item, breachBy: fmt(breachBy), severity: breachBy > (isMin?limit*0.1:limit*0.1) ? 'high' : 'medium' });
+    } else if(nearBreach){
+      const headroom = isMin ? current - limit : limit - current;
+      warnings.push({ ...item, headroom: fmt(headroom) });
+    } else {
+      passing.push(item);
+    }
+  }
+
+  // 1. Single stock limit
+  holdings.forEach(h => {
+    if(h.weight > 0) check(`Single stock: ${h.displayId||h.ticker}`, h.weight, settings.singleStock);
+  });
+
+  // 2. Sector concentration
+  const sm = {};
+  holdings.forEach(h => { const s=h.sector||'Unknown'; sm[s]=(sm[s]||0)+h.weight; });
+  Object.entries(sm).forEach(([sector, wt]) => {
+    if(wt > 0) check(`Sector: ${sector}`, wt, settings.sector);
+  });
+
+  // 3. Country concentration
+  const cm = {};
+  holdings.forEach(h => { const c=h.country||'Unknown'; cm[c]=(cm[c]||0)+h.weight; });
+  Object.entries(cm).forEach(([country, wt]) => {
+    if(wt > 0 && country !== 'Unknown') check(`Country: ${country}`, wt, settings.country);
+  });
+
+  // 4. Liquidity — min 1-day liquidatable
+  const liq1day = holdings.reduce((s,h) => {
+    const days = _daysToLiquidate(h, 0.20);
+    return days !== null && days <= 1 ? s + h.weight : s;
+  }, 0);
+  check('Min liquidity (1-day)', liq1day, settings.liquidity, true);
+
+  // 5. Max illiquid — SEC Rule 22e-4
+  const illiqPct = holdings.reduce((s,h) => {
+    const days = _daysToLiquidate(h, 0.20);
+    return days !== null && days > 30 ? s + h.weight : s;
+  }, 0);
+  check('Max illiquid (>30 days) — SEC 22e-4', illiqPct, settings.illiquid);
+
+  // 6. Cash limit
+  const cashPct = holdings.reduce((s,h) => {
+    const sec = (h.sector||'').toLowerCase();
+    return sec.includes('cash') ? s + h.weight : s;
+  }, 0);
+  if(cashPct > 0) check('Max cash', cashPct, settings.cash);
+
+  // 7. UCITS 5/10/40 rule — single issuer ≤ 10%, issuers >5% collectively ≤ 40%
+  const above5 = holdings.filter(h => h.weight > 5);
+  const above5total = above5.reduce((s,h) => s + h.weight, 0);
+  if(above5total > 0) check('UCITS 5/10/40: issuers >5% collectively', above5total, 40);
+  holdings.forEach(h => {
+    if(h.weight > 10) check(`UCITS: ${h.displayId||h.ticker} single issuer`, h.weight, 10);
+  });
+
+  return { portfolio:p, breaches, warnings, passing };
+}
+
+function renderComplianceCard(r){
+  const { portfolio:p, breaches, warnings, passing } = r;
+  const status = breaches.length > 0 ? 'breach' : warnings.length > 0 ? 'warning' : 'pass';
+  const statusColor = status==='breach' ? 'var(--red)' : status==='warning' ? 'var(--amber)' : 'var(--green)';
+  const statusBg    = status==='breach' ? 'var(--red-light)' : status==='warning' ? 'var(--amber-light)' : 'var(--green-light)';
+  const statusLabel = status==='breach' ? `${breaches.length} BREACH${breaches.length>1?'ES':''}` : status==='warning' ? `${warnings.length} WARNING${warnings.length>1?'S':''}` : 'ALL PASSING';
+
+  const breachRows = breaches.map(b => `
+    <tr style="background:var(--red-light)">
+      <td style="font-size:11px;font-weight:500;color:var(--text)">${b.rule}</td>
+      <td style="font-family:monospace;font-size:11px;font-weight:700;color:var(--red)">${b.current}</td>
+      <td style="font-family:monospace;font-size:11px;color:var(--text2)">${b.isMin?'min ':'max '}${b.limit}</td>
+      <td><span class="badge badge-red" style="font-size:10px">+${b.breachBy} over</span></td>
+    </tr>`).join('');
+
+  const warnRows = warnings.map(w => `
+    <tr style="background:var(--amber-light)">
+      <td style="font-size:11px;font-weight:500;color:var(--text)">${w.rule}</td>
+      <td style="font-family:monospace;font-size:11px;font-weight:700;color:var(--amber)">${w.current}</td>
+      <td style="font-family:monospace;font-size:11px;color:var(--text2)">${w.isMin?'min ':'max '}${w.limit}</td>
+      <td><span class="badge badge-amber" style="font-size:10px">${w.headroom} headroom</span></td>
+    </tr>`).join('');
+
+  const passRows = passing.slice(0,3).map(pa => `
+    <tr>
+      <td style="font-size:11px;color:var(--text2)">${pa.rule}</td>
+      <td style="font-family:monospace;font-size:11px;color:var(--green)">${pa.current}</td>
+      <td style="font-family:monospace;font-size:11px;color:var(--text3)">${pa.isMin?'min ':'max '}${pa.limit}</td>
+      <td><span class="badge badge-green" style="font-size:10px">✓ Pass</span></td>
+    </tr>`).join('');
+
+  const morePass = passing.length > 3 ? `<tr><td colspan="4" style="font-size:11px;color:var(--text3);padding:6px 14px">+ ${passing.length-3} more passing rules</td></tr>` : '';
+
+  return `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="card-title">${p.displayName}</div>
+            <span style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:99px;background:${statusBg};color:${statusColor}">${statusLabel}</span>
+          </div>
+          <div class="card-sub">${p.portfolioType} · ${p.holdings.length} positions · ${fmtCcy(p.totalMV)}</div>
+        </div>
+        <button class="btn btn-sm" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2)"
+          onclick="nav('ai');setTimeout(()=>{aiAsk('Compliance check for ${p.displayName} — explain any breaches and suggest remediation');},300)">
+          Ask AI →
+        </button>
+      </div>
+      ${(breaches.length + warnings.length + passing.length) > 0 ? `
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Rule</th><th>Current</th><th>Limit</th><th>Status</th></tr></thead>
+        <tbody>${breachRows}${warnRows}${passRows}${morePass}</tbody>
+      </table></div>` : '<div style="padding:14px 20px;color:var(--text3);font-size:12px">No rules to check — add mandate settings above</div>'}
+    </div>`;
+}
+
 /* ═══ SIGNALS ══════════════════════════════════════════════════════════ */
 const SG=[
   {type:'alert',title:'Tech concentration above target',body:'Technology sector now represents 8.9% of NAV vs. 6.5% policy target.',ctx:'My tech sector is 8.9% of NAV vs 6.5% target. What should I do?'},
@@ -2272,10 +2732,13 @@ document.getElementById('signals-grid').innerHTML=SG.map(s=>`
   </div>`).join('');
 
 /* ═══ INIT ══════════════════════════════════════════════════════════════ */
-loadPortfolios();        // restore from localStorage
-updateOverviewScreen();  // render overview with whatever was saved
+loadPortfolios();        // restore portfolios from localStorage
+loadKbDocs();            // restore knowledge base documents
+updateOverviewScreen();  // render overview
 updateAIContext();       // set AI context
 renderLoadedList();      // show loaded portfolios on upload screen
+renderKbDocs();          // show KB documents on AI screen
+initMandateSettings();   // populate mandate settings form
 </script>
 </body>
 </html>
