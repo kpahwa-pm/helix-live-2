@@ -876,7 +876,7 @@ async function _process(buf, file){
   // Asset Class — separate from sector (Equity / Fixed Income / Cash etc.)
   const acCol  = findPriority(['assetclass','assettype'],['type','class']);
   // Other enrichment
-  const cCol   = find('country','region','geography');
+  const cCol   = find('country','location','domicile','region','geography','market','exchange');
   const iCol   = find('industry');
   const ratCol = find('rating','creditrating','moodys','snp','fitch');
   const durCol = find('duration','modifiedduration');
@@ -1112,9 +1112,11 @@ async function _process(buf, file){
   setLoad('Building dashboard…','Almost ready');setProg(95);
   await new Promise(r=>setTimeout(r,400));
 
-  // 9. Save portfolio — deduplicate by filename
+  // 9. Save portfolio
+  // Deduplicate by filename + portfolioType — so equity and bond files with same name are kept separate
   const portfolioId = file.name.replace(/\.[^.]+$/,'').replace(/\s+/g,'-') + '-' + Date.now();
-  const existing = portfolios.findIndex(p=>p.fileName===file.name);
+  const dedupeKey   = file.name + '::' + portfolioType;
+  const existing    = portfolios.findIndex(p => (p.fileName + '::' + p.portfolioType) === dedupeKey);
   const portfolioObj = {
     id: existing >= 0 ? portfolios[existing].id : portfolioId,
     fileName: file.name,
@@ -1214,8 +1216,16 @@ function updateOverviewScreen(){
 }
 
 function buildFirmCharts(){
-  const allH  = portfolios.flatMap(p=>p.holdings);
-  const totalMV = portfolios.reduce((s,p)=>s+p.totalMV,0);
+  const allH    = portfolios.flatMap(p => p.holdings);
+  const totalMV = portfolios.reduce((s,p) => s + p.totalMV, 0);
+
+  console.log('buildFirmCharts: portfolios=', portfolios.length, 'holdings=', allH.length, 'totalMV=', totalMV);
+
+  if(!allH.length || totalMV === 0){
+    document.getElementById('firm-charts').innerHTML = '';
+    return;
+  }
+
   // Sector
   const sm={};allH.forEach(h=>{const s=h.sector||'Unknown';sm[s]=(sm[s]||0)+h.marketValue;});
   const sd=Object.entries(sm).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v],i)=>[k,+((v/totalMV)*100).toFixed(1),PALETTE[i]]);
@@ -1225,6 +1235,10 @@ function buildFirmCharts(){
   // Country
   const cm={};allH.forEach(h=>{const c=h.country||'Unknown';cm[c]=(cm[c]||0)+h.marketValue;});
   const cd=Object.entries(cm).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v],i)=>[k,+((v/totalMV)*100).toFixed(1),PALETTE[i]]);
+
+  console.log('Sector data:', sd);
+  console.log('Country data:', cd);
+
   document.getElementById('firm-charts').innerHTML=
     donut('Portfolio Type Mix',td)+donut('Top Sector Exposure',sd)+donut('Country Exposure',cd);
 }
