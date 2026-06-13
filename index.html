@@ -1060,8 +1060,10 @@ async function _process(buf, file){
   if(!positions.length){ alertUp('No valid positions found. Check that rows have an identifier (Ticker/ISIN) and a quantity or market value.'); return; }
   setProg(15);
 
-  // 4. Fetch Yahoo prices — only for positions that need it (have ticker, no file MV/price)
-  const needsYahoo = positions.filter(p => p.pricingStrategy === 'yahoo');
+  // 4. Fetch Yahoo data — for ANY position with a ticker, not just 'yahoo' pricing strategy.
+  //    File-MV holdings (bonds with Notional Value) still need Yahoo for ADV, sector,
+  //    country, exchange — used in liquidity/stress/VaR even though price comes from file.
+  const needsYahoo = positions.filter(p => p.ticker && p.ticker.length > 0);
   const priceData  = {};
   const failed     = [];
 
@@ -1487,11 +1489,11 @@ async function refreshPortfolioPrices(){
   btn.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;display:inline-block"></span> Refreshing…`;
 
   try{
-    // Re-fetch only Yahoo-priced holdings
-    const yahooHoldings = p.holdings.filter(h=>h.ticker&&h.priceSource==='yahoo');
+    // Re-fetch Yahoo data for ALL holdings with tickers — needed for ADV even on file-mv bonds
+    const tickerHoldings = p.holdings.filter(h=>h.ticker&&h.ticker.length>0);
     const priceData = {};
-    for(let i=0;i<yahooHoldings.length;i+=10){
-      const batch = yahooHoldings.slice(i,i+10);
+    for(let i=0;i<tickerHoldings.length;i+=10){
+      const batch = tickerHoldings.slice(i,i+10);
       const res   = await fetch(`${WORKER}/prices?tickers=${encodeURIComponent(batch.map(h=>h.ticker).join(','))}`);
       if(!res.ok) throw new Error('HTTP '+res.status);
       Object.assign(priceData, await res.json());
@@ -1499,16 +1501,20 @@ async function refreshPortfolioPrices(){
 
     // Update prices on holdings in place
     p.holdings.forEach(h=>{
-      if(!h.ticker||h.priceSource!=='yahoo') return;
+      if(!h.ticker) return;
       const pd = priceData[h.ticker];
-      if(!pd||!pd.price) return;
-      const prev    = pd.previousClose||0;
-      h.price       = pd.price;
-      h.previousClose = prev;
-      h.dayPnl      = (pd.price-prev)*h.qty;
-      h.dayPct      = prev>0?((pd.price-prev)/prev)*100:0;
-      h.marketValue = pd.price*h.qty;
+      if(!pd) return;
+      // ADV — update for ANY holding with a ticker (bond ETFs included)
       if(pd.averageDailyVolume3Month) h.avgDailyVolume = pd.averageDailyVolume3Month;
+      // Price/MV — only update for live-priced (yahoo) holdings; file-mv keeps file values
+      if(h.priceSource==='yahoo' && pd.price){
+        const prev    = pd.previousClose||0;
+        h.price       = pd.price;
+        h.previousClose = prev;
+        h.dayPnl      = (pd.price-prev)*h.qty;
+        h.dayPct      = prev>0?((pd.price-prev)/prev)*100:0;
+        h.marketValue = pd.price*h.qty;
+      }
     });
 
     // Recalculate totals and weights
