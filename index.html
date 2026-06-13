@@ -750,7 +750,7 @@ Upload portfolios and I'll have full visibility across all of them. Add mandate 
 <script>
 /* ═══ CONFIG ═══════════════════════════════════════════════════════════ */
 const WORKER  = 'https://proud-resonance-42fd.k-pahwa14-e82.workers.dev';
-const MODEL   = 'claude-sonnet-4-5';
+const MODEL   = 'claude-sonnet-4-20250514';
 const STORAGE_KEY = 'helix_portfolios_v2';
 const PALETTE = ['#3b82f6','#22c55e','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#f43f5e','#84cc16'];
 const SECTOR_PE = {technology:28,'communication services':26,'health care':22,'consumer discretionary':22,'consumer staples':20,industrials:18,utilities:17,'real estate':17,financials:14,energy:12,materials:12};
@@ -1999,6 +1999,120 @@ function donut(title,data){
 /* ═══ AI ═══════════════════════════════════════════════════════════════ */
 let aiContext = `You are Helix, an AI assistant for institutional portfolio analytics. No portfolios uploaded yet — encourage the user to upload on the Upload screen.`;
 
+/* ═══ PORTFOLIO STATS — per-portfolio aggregation for AI context ═══════
+   Computes sector, country, duration buckets, rating buckets, issuer
+   concentration, liquidity summary, and top holdings for ONE portfolio.
+   Used to build rich AI context dynamically based on what the user asks.
+════════════════════════════════════════════════════════════════════════ */
+function buildPortfolioStats(p){
+  const holdings = p.holdings;
+  const totalMV  = p.totalMV;
+  const grp = (arr,key,val) => { const m={}; arr.forEach(h=>{const k=h[key]||'Unknown'; m[k]=(m[k]||0)+(val?h[val]:1);}); return m; };
+  const fmtPctList = (m,denom,n=6) => Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,n)
+    .map(([k,v])=>`${k}: ${denom?((v/denom)*100).toFixed(1)+'%':v}`).join(', ');
+
+  let out = `\n### ${p.displayName} (${p.portfolioType})\n`;
+  out += `AUM: ${fmtCcy(totalMV)} | Positions: ${holdings.length} | Day P&L: ${fmtCcy(p.totalDayPnl||0)} | Data: ${p.pricingMix==='live'?'Live prices':p.pricingMix==='file'?'File data':'Mixed'}\n`;
+
+  // Sector / Country
+  out += `Sector exposure (top 6): ${fmtPctList(grp(holdings,'sector','marketValue'), totalMV)}\n`;
+  out += `Country exposure (top 6): ${fmtPctList(grp(holdings,'country','marketValue'), totalMV)}\n`;
+
+  // Duration buckets — only if duration data present
+  const withDur = holdings.filter(h => h.duration != null && h.marketValue > 0);
+  if(withDur.length){
+    const totalDurMV = withDur.reduce((s,h)=>s+h.marketValue,0);
+    const wDur = withDur.reduce((s,h)=>s+h.duration*(h.marketValue/totalDurMV),0);
+    const buckets = {'<2y':0,'2-5y':0,'5-10y':0,'>10y':0};
+    withDur.forEach(h=>{
+      const d=h.duration;
+      const b = d<2?'<2y':d<5?'2-5y':d<10?'5-10y':'>10y';
+      buckets[b]+=h.marketValue;
+    });
+    out += `Duration: weighted avg ${wDur.toFixed(2)}y across ${withDur.length} holdings | Buckets: ${fmtPctList(buckets, totalDurMV, 4)}\n`;
+  } else {
+    out += `Duration: not available in uploaded data\n`;
+  }
+
+  // Credit rating buckets — only if rating data present
+  const withRating = holdings.filter(h => h.csvRating && h.csvRating !== '' && h.marketValue > 0);
+  if(withRating.length){
+    const ratingMV = withRating.reduce((s,h)=>s+h.marketValue,0);
+    out += `Credit rating (${withRating.length}/${holdings.length} positions): ${fmtPctList(grp(withRating,'csvRating','marketValue'), ratingMV, 8)}\n`;
+  } else {
+    out += `Credit rating: not available in uploaded data\n`;
+  }
+
+  // Issuer concentration — group by issuer name (strip common suffixes for matching)
+  const issuerOf = h => (h.shortName || h.name || h.ticker || 'Unknown')
+    .replace(/\s+(MTN|144A|LLC|INC|CORP|CO|PLC|LP|SA|NV|DAC|FXD-FRN|FXD-FLT|FX-FRN|FXD TO FLT|FXD-TO-FLT)\b.*$/i,'')
+    .replace(/\s+\(.*?\)/g,'')
+    .trim();
+  const issuerMV = {};
+  holdings.forEach(h=>{ const k=issuerOf(h); issuerMV[k]=(issuerMV[k]||0)+h.marketValue; });
+  const topIssuers = Object.entries(issuerMV).sort((a,b)=>b[1]-a[1]).slice(0,8)
+    .map(([k,v])=>`${k}: ${((v/totalMV)*100).toFixed(1)}%`).join(', ');
+  out += `Top issuers (combined across all bonds from same issuer): ${topIssuers}\n`;
+
+  // Liquidity summary — using existing engine, default 20% participation
+  const liqBuckets = {'≤ 1 day':0,'2–7 days':0,'8–30 days':0,'> 30 days':0};
+  let advCount = 0;
+  holdings.forEach(h=>{
+    if(h.marketValue<=0) return;
+    const days = _daysToLiquidate(h, 0.20);
+    if(h.avgDailyVolume) advCount++;
+    if(days===null) return;
+    const b = days<=1?'≤ 1 day':days<=7?'2–7 days':days<=30?'8–30 days':'> 30 days';
+    liqBuckets[b]+=h.marketValue;
+  });
+  out += `Liquidity (20% participation, ${advCount}/${holdings.length} ADV-based): ${fmtPctList(liqBuckets, totalMV, 4)}\n`;
+
+  // Top holdings by weight — this portfolio only, max 10
+  const topH = [...holdings].filter(h=>h.marketValue>0).sort((a,b)=>b.marketValue-a.marketValue).slice(0,10);
+  out += `Top holdings by weight:\n`;
+  out += topH.map(h=>{
+    const parts = [`${h.displayId||h.ticker||h.name}`, `${h.weight?.toFixed(2)}%`, fmtCcy(h.marketValue)];
+    if(h.duration!=null) parts.push(`dur ${h.duration.toFixed(1)}y`);
+    if(h.csvRating) parts.push(h.csvRating);
+    if(h.helixScore!=null) parts.push(`Helix ${h.helixScore}/100`);
+    if(h.analystRating) parts.push(`Yahoo ${h.analystRating}`);
+    parts.push(h.sector, h.country);
+    return '  - ' + parts.filter(Boolean).join(' | ');
+  }).join('\n');
+
+  return out;
+}
+
+/* ═══ KEYWORD-BASED PORTFOLIO SELECTION ═════════════════════════════════
+   "SQL WHERE clause" approach — scan the user's message for portfolio
+   names or type keywords. Matched portfolios get full stats; unmatched
+   get a one-line summary only. No match at all → everyone gets full stats.
+════════════════════════════════════════════════════════════════════════ */
+function selectRelevantPortfolios(userMessage, allPortfolios){
+  const msg = userMessage.toLowerCase();
+
+  // Direct name/filename match
+  const named = allPortfolios.filter(p => {
+    const name = (p.displayName||'').toLowerCase();
+    const file = (p.fileName||'').toLowerCase().replace(/\.[^.]+$/,'');
+    return (name && msg.includes(name)) || (file && msg.includes(file));
+  });
+  if(named.length) return named;
+
+  // Type keyword match — "fixed income", "equity", "bond"
+  const typeMatch = allPortfolios.filter(p => {
+    const t = (p.portfolioType||'').toLowerCase();
+    if(t==='fixed income' && (msg.includes('fixed income')||msg.includes('bond'))) return true;
+    if(t==='equity' && (msg.includes('equity')||msg.includes('equities')||msg.includes('stock'))) return true;
+    return false;
+  });
+  if(typeMatch.length) return typeMatch;
+
+  // No match — ambiguous, give everything full detail
+  return allPortfolios;
+}
+
+/* ═══ AI CONTEXT — base (static) + dynamic per-message addition ════════ */
 function updateAIContext(activePortfolio){
   if(!portfolios.length){
     aiContext=`You are Helix, an AI assistant for institutional portfolio analytics. No portfolios uploaded yet.`;
@@ -2007,51 +2121,36 @@ function updateAIContext(activePortfolio){
   const totalAUM = portfolios.reduce((s,p)=>s+p.totalMV,0);
   const totalPnl = portfolios.reduce((s,p)=>s+p.totalDayPnl,0);
 
-  // If a specific portfolio was passed, focus on it but include firm context
-  const focusPortfolio = activePortfolio || null;
-  const allHoldings = portfolios.flatMap(p=>p.holdings.map(h=>({...h,_portfolioName:p.displayName,_portfolioId:p.id})));
-  const top15 = [...allHoldings].sort((a,b)=>b.marketValue-a.marketValue).slice(0,15);
-
-  const grp=(arr,key,val)=>{const m={};arr.forEach(h=>{const k=h[key]||'Unknown';m[k]=(m[k]||0)+(val?h[val]:1);});return m;};
-  const fmt=(m,denom,n=5)=>Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,n).map(([k,v])=>`${k}: ${denom?((v/denom)*100).toFixed(1)+'%':v}`).join(', ');
-
+  // Base context — lightweight, always the same regardless of question.
+  // Per-portfolio deep stats are added dynamically in aiSend() based on
+  // what the user actually asks (keyword-matched via selectRelevantPortfolios).
   aiContext=`You are Helix, an expert AI portfolio analyst for institutional investment management.
 
 FIRM OVERVIEW: ${portfolios.length} portfolio${portfolios.length>1?'s':''} · Total AUM ${fmtCcy(totalAUM)} · Day P&L ${fmtCcy(totalPnl)}
 
-PORTFOLIOS:
+PORTFOLIOS LOADED:
 ${portfolios.map(p=>{
   const eqH=p.holdings.filter(h=>h.helixScore!=null);
   const avgH=eqH.length?Math.round(eqH.reduce((s,h)=>s+h.helixScore,0)/eqH.length):null;
   const pnlPct=(p.totalMV-p.totalDayPnl)>0?(p.totalDayPnl/(p.totalMV-p.totalDayPnl))*100:0;
-  return`- ${p.displayName} (${p.portfolioType}): ${fmtCcy(p.totalMV)} | Day ${fmtPct(pnlPct)} | ${p.holdings.length} positions | Avg Helix: ${avgH!=null?avgH+'/100':'N/A'} | ${p.pricingMix==='live'?'Live prices':p.pricingMix==='file'?'File data':'Mixed data'}`;
+  return`- ${p.displayName} (${p.portfolioType}, file: ${p.fileName}): ${fmtCcy(p.totalMV)} | Day ${fmtPct(pnlPct)} | ${p.holdings.length} positions | Avg Helix: ${avgH!=null?avgH+'/100':'N/A'} | ${p.pricingMix==='live'?'Live prices':p.pricingMix==='file'?'File data':'Mixed data'}`;
 }).join('\n')}
-
-${focusPortfolio?`ACTIVE PORTFOLIO: ${focusPortfolio.displayName}
-SECTORS: ${fmt(grp(focusPortfolio.holdings,'sector','marketValue'),focusPortfolio.totalMV)}
-COUNTRIES: ${fmt(grp(focusPortfolio.holdings,'country','marketValue'),focusPortfolio.totalMV)}
-`:'AGGREGATE SECTORS: '+fmt(grp(allHoldings,'sector','marketValue'),totalAUM)+'\n'}
-
-TOP ${top15.length} HOLDINGS ACROSS ALL PORTFOLIOS:
-${top15.map(h=>`${h.ticker} (${h._portfolioName}): ${fmtCcy(h.marketValue)} | ${h.weight?.toFixed(1)}% wt | Day ${fmtPct(h.dayPct)} | Yahoo: ${h.analystRating} | Helix: ${h.helixScore!=null?h.helixScore+'/100→'+h.helixRating:'N/A'} | ESG: ${h.esgTotal?.toFixed(1)||'N/A'} | Beta: ${h.beta?.toFixed(2)||'N/A'} | P/E: ${h.peRatio?.toFixed(1)||'N/A'}x | ${h.sector} | ${h.country}`).join('\n')}
 
 HELIX QUANT METHODOLOGY: Score 0-100 across Valuation 30% · Growth 25% · Quality 25% · Momentum 20%. 78+=Strong Buy · 62+=Buy · 44+=Hold · 28+=Sell. Bonds/ETFs/Cash show N/A.
 Be precise, data-driven, actionable. Reference portfolios, tickers and numbers. Explain Yahoo vs Helix divergences.${
-  // Mandate settings
   (() => {
     const s = loadMandateSettings();
     return `\n\nMANDATE LIMITS (user-configured):\n- Single stock max: ${s.singleStock}% of NAV\n- Single sector max: ${s.sector}% of NAV\n- Single country max: ${s.country}% of NAV\n- Min liquidity (1-day): ${s.liquidity}% of NAV\n- Max illiquid (>30 days): ${s.illiquid}% of NAV — SEC Rule 22e-4\n- Max cash: ${s.cash}% of NAV\n\nREGULATORY RULES (always apply):\n- SEC Rule 22e-4: Illiquid assets ≤ 15% of NAV\n- UCITS 5/10/40: Single issuer ≤ 10%, issuers >5% collectively ≤ 40%\n- Standard: Single stock ≤ 10% (typical institutional limit)`;
   })()
 }${
-  // Knowledge base documents
   kbDocs.length > 0 ? '\n\nKNOWLEDGE BASE DOCUMENTS:\n' + kbDocs.map(d =>
     `--- Document: ${d.fileName} ---\n${d.text.slice(0, 3000)}${d.text.length > 3000 ? '\n[truncated — ' + (d.text.length/1000).toFixed(0) + 'K chars total]' : ''}`
   ).join('\n\n') : ''
 }`;
 
   document.getElementById('ai-card-sub').textContent =
-    focusPortfolio
-      ? `Analysing ${focusPortfolio.displayName} · ${focusPortfolio.holdings.length} positions`
+    activePortfolio
+      ? `Analysing ${activePortfolio.displayName} · ${activePortfolio.holdings.length} positions`
       : `${portfolios.length} portfolio${portfolios.length>1?'s':''} · ${fmtCcy(totalAUM)} total AUM${kbDocs.length>0?' · '+kbDocs.length+' KB doc'+(kbDocs.length>1?'s':''):''}`;
 }
 
@@ -2070,8 +2169,22 @@ async function aiSend(){
   chat.appendChild(tel);chat.scrollTop=chat.scrollHeight;
   aiHist.push({role:'user',content:msg});
   try{
+    // Dynamically select which portfolios get full stats based on the question
+    const relevant = portfolios.length ? selectRelevantPortfolios(msg, portfolios) : [];
+    const relevantIds = new Set(relevant.map(p=>p.id));
+    let dynamicContext = '';
+    if(relevant.length){
+      dynamicContext = '\n\nDETAILED PORTFOLIO DATA (relevant to this question):\n' +
+        relevant.map(p=>buildPortfolioStats(p)).join('\n');
+      const others = portfolios.filter(p=>!relevantIds.has(p.id));
+      if(others.length){
+        dynamicContext += `\n\n(${others.length} other portfolio${others.length>1?'s':''} loaded but not detailed above: ${others.map(p=>p.displayName).join(', ')} — ask specifically about these for full stats)`;
+      }
+    }
+    const systemPrompt = aiContext + dynamicContext;
+
     const res=await fetch(WORKER,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:MODEL,max_tokens:1200,system:aiContext,messages:aiHist})});
+      body:JSON.stringify({model:MODEL,max_tokens:1200,system:systemPrompt,messages:aiHist})});
     if(!res.ok)throw new Error('HTTP '+res.status);
     const data=await res.json();
     document.getElementById('ai-think')?.remove();
