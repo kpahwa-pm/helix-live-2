@@ -1658,11 +1658,8 @@ function _daysToLiquidate(h, participationRate){
     sector.includes('fixed') || sector.includes('sovereign') ||
     sector.includes('bond')  || ac.includes('fixed') || ac.includes('bond');
 
-  if(isBond && !h.avgDailyVolume){
-    return _bondLiqDays(h);
-  }
-
-  // Equity / Bond ETF — ADV based
+  // ADV-based calculation takes priority — works for equities AND bond ETFs
+  // that trade on exchange (most bond ETFs have ADV from Yahoo)
   if(h.avgDailyVolume && h.price > 0){
     const advValue = h.avgDailyVolume * h.price; // convert shares → £/$
     if(advValue > 0){
@@ -1670,8 +1667,10 @@ function _daysToLiquidate(h, participationRate){
     }
   }
 
-  // Fallback — no ADV data, use conservative rule-based
+  // No ADV available — individual bonds use rating-based lookup
   if(isBond) return _bondLiqDays(h);
+
+  // Fallback — no ADV, not a bond
   const country = (h.country||'').toLowerCase();
   if(country.includes('india')||country.includes('china')||country.includes('emerging')) return 5;
   if(sector.includes('real estate')||sector.includes('alternative')) return 90;
