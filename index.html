@@ -986,12 +986,16 @@ async function _process(buf, file){
   const durCol = find('duration','modifiedduration');
   const couCol = find('coupon','couponrate');
   const matCol = find('maturity','maturitydate','expiry');
+  // File-provided trading volume — used directly for liquidity calc instead of Yahoo ADV
+  const volCol   = findPriority(['tradingvolume','dailyvolume'],['volume']);
+  const tradesCol= findPriority(['numberoftrades','#trades'],['trades']);
 
   // Debug log — visible in F12 console
   console.log('Helix column detection:', {
     ticker:tCol, isin:isinCol, name:nCol, qty:qCol, par:parCol,
     mv:mvCol, price:prCol, sector:sCol, assetClass:acCol,
-    country:cCol, rating:ratCol, duration:durCol, coupon:couCol
+    country:cCol, rating:ratCol, duration:durCol, coupon:couCol,
+    volume:volCol, trades:tradesCol
   });
 
   // Need at least an identifier (ticker or ISIN) and a value source (qty or MV)
@@ -1053,6 +1057,9 @@ async function _process(buf, file){
         duration:     durCol ? parseFloat(String(r[durCol]).replace(/,/g,'')) || null : null,
         coupon:       couCol ? parseFloat(String(r[couCol]).replace(/,/g,'')) || null : null,
         maturity:     matCol ? String(r[matCol]).trim() : '',
+        // File-provided trading data — used directly for liquidity instead of Yahoo ADV
+        fileVolume:   volCol    ? parseFloat(String(r[volCol]).replace(/,/g,''))    || null : null,
+        fileTrades:   tradesCol ? parseFloat(String(r[tradesCol]).replace(/,/g,'')) || null : null,
       };
     })
     .filter(p => p.identifier && (p.qty > 0 || p.fileMV > 0 || p.filePrice > 0));
@@ -1165,6 +1172,8 @@ async function _process(buf, file){
       duration:     p.duration,
       coupon:       p.coupon,
       maturity:     p.maturity,
+      fileVolume:   p.fileVolume,
+      fileTrades:   p.fileTrades,
       csvRating:    p.csvRating,
       // Yahoo fundamentals
       beta:           pd.beta           ?? null,
@@ -1664,7 +1673,14 @@ function _daysToLiquidate(h, participationRate){
     sector.includes('fixed') || sector.includes('sovereign') ||
     sector.includes('bond')  || ac.includes('fixed') || ac.includes('bond');
 
-  // ADV-based calculation takes priority — works for equities AND bond ETFs
+  // PRIORITY 1 — File-provided trading volume (e.g. from dealer market data screens).
+  // This is the bond's own observed $ volume — most accurate, no Yahoo needed.
+  // Volume here is already in $ terms (Size × Price/100), so used directly as $ ADV.
+  if(h.fileVolume && h.fileVolume > 0){
+    return mv / (participationRate * h.fileVolume);
+  }
+
+  // PRIORITY 2 — ADV-based calculation — works for equities AND bond ETFs
   // that trade on exchange (most bond ETFs have ADV from Yahoo)
   if(h.avgDailyVolume && h.price > 0){
     const advValue = h.avgDailyVolume * h.price; // convert shares → £/$
@@ -1673,7 +1689,7 @@ function _daysToLiquidate(h, participationRate){
     }
   }
 
-  // No ADV available — individual bonds use rating-based lookup
+  // PRIORITY 3 — No ADV/volume available — individual bonds use rating-based lookup
   if(isBond) return _bondLiqDays(h);
 
   // Fallback — no ADV, not a bond
@@ -1717,9 +1733,12 @@ function buildLiquidityProfile(holdings, totalMV){
   const pct1day    = totalMV > 0 ? (buckets['≤ 1 day'] / totalMV) * 100 : 0;
   const pctIlliquid = totalMV > 0 ? (buckets['> 30 days'] / totalMV) * 100 : 0;
 
+  const fileVolCoverage = withDays.filter(h=>h.fileVolume&&h.marketValue>0).length;
   const advCoverage = withDays.filter(h=>h.avgDailyVolume&&h.marketValue>0).length;
   const totalHoldings = holdings.filter(h=>h.marketValue>0).length;
-  const methodNote = advCoverage > 0
+  const methodNote = fileVolCoverage > 0
+    ? `File volume-based · ${fileVolCoverage}/${totalHoldings} holdings${advCoverage>0?` + ADV for ${advCoverage}`:''} · ${(rate*100).toFixed(0)}% participation`
+    : advCoverage > 0
     ? `ADV-based · ${advCoverage}/${totalHoldings} holdings · ${(rate*100).toFixed(0)}% participation`
     : `Rating-based fallback · ${(rate*100).toFixed(0)}% participation`;
 
@@ -2056,16 +2075,20 @@ function buildPortfolioStats(p){
 
   // Liquidity summary — using existing engine, default 20% participation
   const liqBuckets = {'≤ 1 day':0,'2–7 days':0,'8–30 days':0,'> 30 days':0};
-  let advCount = 0;
+  let advCount = 0, fileVolCount = 0;
   holdings.forEach(h=>{
     if(h.marketValue<=0) return;
     const days = _daysToLiquidate(h, 0.20);
-    if(h.avgDailyVolume) advCount++;
+    if(h.fileVolume) fileVolCount++;
+    else if(h.avgDailyVolume) advCount++;
     if(days===null) return;
     const b = days<=1?'≤ 1 day':days<=7?'2–7 days':days<=30?'8–30 days':'> 30 days';
     liqBuckets[b]+=h.marketValue;
   });
-  out += `Liquidity (20% participation, ${advCount}/${holdings.length} ADV-based): ${fmtPctList(liqBuckets, totalMV, 4)}\n`;
+  const liqMethod = fileVolCount>0
+    ? `${fileVolCount}/${holdings.length} from file trading volume${advCount>0?`, ${advCount} ADV-based`:''}`
+    : `${advCount}/${holdings.length} ADV-based`;
+  out += `Liquidity (20% participation, ${liqMethod}): ${fmtPctList(liqBuckets, totalMV, 4)}\n`;
 
   // Top holdings by weight — this portfolio only, max 10
   const topH = [...holdings].filter(h=>h.marketValue>0).sort((a,b)=>b.marketValue-a.marketValue).slice(0,10);
