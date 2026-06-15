@@ -149,7 +149,7 @@ tr:hover td{background:var(--hover)}
 .risk-panel-sub{font-size:11px;color:var(--text3);margin-bottom:8px}
 .risk-panel.full{grid-column:1/-1}
 /* VaR metrics inside risk section */
-.var-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px}
+.var-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px}
 .var-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
 .var-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;font-weight:600;margin-bottom:6px}
 .var-value{font-size:18px;font-weight:700;color:var(--text);margin-bottom:2px}
@@ -396,19 +396,10 @@ tr:hover td{background:var(--hover)}
         </div>
         <div class="risk-body" id="risk-body">
 
-          <!-- VaR metrics row -->
-          <div class="var-grid" id="d-var-grid"></div>
+          <!-- Adaptive risk metrics — rendered by buildRiskPanels() based on portfolio composition -->
+          <div id="d-var-grid"></div>
 
           <div class="risk-panels" id="d-risk-panels">
-            <!-- ESG Distribution -->
-            <div class="risk-panel" id="rp-esg">
-              <div class="risk-panel-title">
-                <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10"/></svg>
-                ESG Distribution
-              </div>
-              <div class="risk-panel-sub" id="rp-esg-sub"></div>
-              <div id="rp-esg-bars"></div>
-            </div>
 
             <!-- Credit Quality (shown for FI/mixed) -->
             <div class="risk-panel" id="rp-credit" style="display:none">
@@ -1568,32 +1559,108 @@ function buildRiskPanels(p){
   const holdings = p.holdings;
   const totalMV  = p.totalMV;
 
-  // VaR grid — shows loading state; replaced by fetchAndBuildHistoricalRisk on expand
-  document.getElementById('d-var-grid').innerHTML=`
-    <div class="var-card bt-amber"><div class="var-label">VaR 95% · 1D</div><div class="var-value" id="rv-var95">—</div><div class="var-sub" id="rv-var95s">Expand to calculate</div></div>
-    <div class="var-card bt-red"><div class="var-label">VaR 99% · 1D</div><div class="var-value" id="rv-var99">—</div><div class="var-sub" id="rv-var99s">Historical simulation</div></div>
-    <div class="var-card bt-purple"><div class="var-label">CVaR 95%</div><div class="var-value" id="rv-cvar">—</div><div class="var-sub" id="rv-cvars">Expected shortfall</div></div>
-    <div class="var-card bt-blue"><div class="var-label">Volatility (ann.)</div><div class="var-value" id="rv-vol">—</div><div class="var-sub" id="rv-vols">252-day realised</div></div>
-    <div class="var-card bt-red"><div class="var-label">Max Drawdown</div><div class="var-value" id="rv-mdd">—</div><div class="var-sub" id="rv-mdds">Peak to trough</div></div>
-    <div class="var-card bt-green"><div class="var-label">Sharpe Ratio</div><div class="var-value" id="rv-sharpe">—</div><div class="var-sub" id="rv-sharpes">Return / risk</div></div>`;
+  // Classify holdings
+  const equityHoldings = holdings.filter(h => h.ticker && h.marketValue > 0 && !h.isBond);
+  const bondHoldings   = holdings.filter(h => h.isBond && h.marketValue > 0);
+  const equityMV = equityHoldings.reduce((s,h)=>s+h.marketValue,0);
+  const bondMV   = bondHoldings.reduce((s,h)=>s+h.marketValue,0);
+  const hasEquity = equityMV > 0;
+  const hasBonds  = bondMV > 0;
+
+  // ── Build adaptive grid ──────────────────────────────────────────────
+  // Section A: Historical simulation VaR (equity/ETF sleeve)
+  // Section B: Duration-based rate sensitivity (bond sleeve)
+  // Show both when mixed, only relevant one when pure
+
+  let gridHTML = '';
+
+  // Section A — Historical VaR (equity/ETF holdings with tickers)
+  if(hasEquity){
+    const pct = totalMV > 0 ? ((equityMV/totalMV)*100).toFixed(0) : 0;
+    gridHTML += `
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;padding:0 2px">
+          Historical VaR — Equity / ETF sleeve
+          <span style="font-weight:400;margin-left:8px">${equityHoldings.length} holdings · ${pct}% of portfolio · historical simulation</span>
+        </div>
+        <div class="var-grid">
+          <div class="var-card bt-amber"><div class="var-label">VaR 95% · 1D</div><div class="var-value" id="rv-var95">—</div><div class="var-sub" id="rv-var95s">Expand to calculate</div></div>
+          <div class="var-card bt-red"><div class="var-label">VaR 99% · 1D</div><div class="var-value" id="rv-var99">—</div><div class="var-sub" id="rv-var99s">Historical simulation</div></div>
+          <div class="var-card bt-purple"><div class="var-label">CVaR 95%</div><div class="var-value" id="rv-cvar">—</div><div class="var-sub" id="rv-cvars">Expected shortfall</div></div>
+          <div class="var-card bt-blue"><div class="var-label">Volatility (ann.)</div><div class="var-value" id="rv-vol">—</div><div class="var-sub" id="rv-vols">252-day realised</div></div>
+          <div class="var-card bt-red"><div class="var-label">Max Drawdown</div><div class="var-value" id="rv-mdd">—</div><div class="var-sub" id="rv-mdds">Peak to trough</div></div>
+          <div class="var-card bt-green"><div class="var-label">Sharpe Ratio</div><div class="var-value" id="rv-sharpe">—</div><div class="var-sub" id="rv-sharpes">Return / risk</div></div>
+        </div>
+      </div>`;
+  }
+
+  // Section B — Duration-based rate sensitivity (bond sleeve)
+  if(hasBonds){
+    const pct = totalMV > 0 ? ((bondMV/totalMV)*100).toFixed(0) : 0;
+    const withDur = bondHoldings.filter(h=>h.duration!=null);
+    const wDur = withDur.length
+      ? withDur.reduce((s,h)=>s+h.duration*(h.marketValue/bondMV),0)
+      : null;
+    const dv01 = wDur != null ? (wDur * bondMV * 0.0001) : null;
+    // Rate VaR — 10y US rate vol ~100bps/yr, daily ~100/√252 ≈ 6.3bps, 95% CI ≈ 10.4bps
+    const rateVol95bps = 10.4;
+    const rateVaR95 = dv01 != null ? dv01 * rateVol95bps : null;
+    // Scenario shocks
+    const shock25  = dv01 != null ? dv01 * 25  : null;
+    const shock50  = dv01 != null ? dv01 * 50  : null;
+    const shock100 = dv01 != null ? dv01 * 100 : null;
+
+    gridHTML += `
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;padding:0 2px">
+          Rate Sensitivity — Fixed Income sleeve
+          <span style="font-weight:400;margin-left:8px">${bondHoldings.length} holdings · ${pct}% of portfolio · duration model · parallel shift</span>
+        </div>
+        <div class="var-grid">
+          <div class="var-card bt-blue">
+            <div class="var-label">Weighted Avg Duration</div>
+            <div class="var-value">${wDur!=null?wDur.toFixed(2)+'y':'—'}</div>
+            <div class="var-sub">${withDur.length}/${bondHoldings.length} holdings</div>
+          </div>
+          <div class="var-card bt-amber">
+            <div class="var-label">DV01 (per 1bp)</div>
+            <div class="var-value">${dv01!=null?fmtCcy(Math.abs(dv01)):'—'}</div>
+            <div class="var-sub">Dollar value of 1bp move</div>
+          </div>
+          <div class="var-card bt-red">
+            <div class="var-label">Rate VaR 95% · 1D</div>
+            <div class="var-value">${rateVaR95!=null?fmtCcy(Math.abs(rateVaR95)):'—'}</div>
+            <div class="var-sub">~10.4bp daily rate move</div>
+          </div>
+          <div class="var-card bt-amber">
+            <div class="var-label">+25bp Shock</div>
+            <div class="var-value down">${shock25!=null?fmtCcy(Math.abs(shock25)):'—'}</div>
+            <div class="var-sub">P&L impact · parallel shift</div>
+          </div>
+          <div class="var-card bt-red">
+            <div class="var-label">+50bp Shock</div>
+            <div class="var-value down">${shock50!=null?fmtCcy(Math.abs(shock50)):'—'}</div>
+            <div class="var-sub">P&L impact · parallel shift</div>
+          </div>
+          <div class="var-card bt-red">
+            <div class="var-label">+100bp Shock</div>
+            <div class="var-value down">${shock100!=null?fmtCcy(Math.abs(shock100)):'—'}</div>
+            <div class="var-sub">P&L impact · parallel shift</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // Neither — show placeholder
+  if(!hasEquity && !hasBonds){
+    gridHTML = `<div style="padding:12px 0;color:var(--text3);font-size:12px">Upload a portfolio with holdings data to see risk metrics.</div>`;
+  }
+
+  document.getElementById('d-var-grid').innerHTML = gridHTML;
 
   // Stress panel — render immediately using factor model, no fetch needed
   const immediateStress = calculateStressScenarios(holdings, totalMV);
   renderStressResults(immediateStress, totalMV, 'rp-stress-content');
-
-  // ESG (instant)
-  const withESG=holdings.filter(h=>h.esgTotal!=null);
-  if(!withESG.length){
-    document.getElementById('rp-esg-sub').textContent='No ESG data for this portfolio';
-    document.getElementById('rp-esg-bars').innerHTML='<div style="color:var(--text3);font-size:12px">ESG only available for large-cap US/EU stocks</div>';
-  }else{
-    const avg=withESG.reduce((s,h)=>s+h.esgTotal,0)/withESG.length;
-    document.getElementById('rp-esg-sub').textContent=`${withESG.length} of ${holdings.length} · avg ${avg.toFixed(1)} · lower=better`;
-    document.getElementById('rp-esg-bars').innerHTML=[...withESG].sort((a,b)=>b.esgTotal-a.esgTotal).slice(0,6).map(h=>{
-      const pct=Math.min((h.esgTotal/50)*100,100),col=h.esgTotal<15?'var(--green)':h.esgTotal<25?'var(--amber)':'var(--red)';
-      return`<div class="risk-bar-item"><div class="risk-bar-label"><span style="font-weight:500">${h.ticker}</span><span style="font-weight:600;color:${col}">${h.esgTotal.toFixed(1)}</span></div><div class="risk-bar-track"><div class="risk-bar-fill" style="width:${pct}%;background:${col}"></div></div></div>`;
-    }).join('');
-  }
 
   // Credit Quality
   const withRating=holdings.filter(h=>h.csvRating&&h.csvRating!=='');
