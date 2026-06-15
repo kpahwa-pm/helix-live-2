@@ -1918,8 +1918,8 @@ function _showHistoricalUnavailable(msg){
   ['rv-var95','rv-var99','rv-cvar','rv-vol','rv-mdd','rv-sharpe'].forEach((id,i)=>{
     _setRiskCard(id,'—',i===0?msg:'');
   });
-  if(document.getElementById('rp-stress-content'))
-    document.getElementById('rp-stress-content').innerHTML=`<div style="color:var(--text3);font-size:12px">${msg}</div>`;
+  // Note: stress content is NOT cleared here — stress scenarios are factor-based
+  // and render independently of whether Yahoo ticker data is available.
 }
 function _closestDateIdx(dates,target){
   let best=-1,bestDiff=Infinity;
